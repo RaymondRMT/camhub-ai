@@ -9,13 +9,13 @@
   <style>
     :root {
       --bg-gradient: radial-gradient(circle at 15% 15%, #e0f2fe 0%, #f1f5f9 45%, #e2e8f0 100%);
-      --glass-bg: rgba(255, 255, 255, 0.65);
-      --glass-strong: rgba(255, 255, 255, 0.85);
+      --glass-bg: rgba(255, 255, 255, 0.68);
+      --glass-strong: rgba(255, 255, 255, 0.88);
       --glass-border: rgba(255, 255, 255, 0.92);
       --text-primary: #0f172a;
       --text-secondary: #475569;
       --accent: #0284c7;
-      --accent-glow: rgba(2, 132, 199, 0.25);
+      --accent-glow: rgba(2, 132, 199, 0.28);
       --danger: #ef4444;
       --warning: #f59e0b;
       --success: #10b981;
@@ -26,13 +26,13 @@
 
     [data-theme="dark"] {
       --bg-gradient: radial-gradient(circle at 15% 15%, #0f172a 0%, #090d16 55%, #020617 100%);
-      --glass-bg: rgba(17, 25, 40, 0.65);
-      --glass-strong: rgba(23, 33, 54, 0.85);
+      --glass-bg: rgba(17, 25, 40, 0.68);
+      --glass-strong: rgba(23, 33, 54, 0.88);
       --glass-border: rgba(255, 255, 255, 0.14);
       --text-primary: #f8fafc;
       --text-secondary: #94a3b8;
       --accent: #38bdf8;
-      --accent-glow: rgba(56, 189, 248, 0.25);
+      --accent-glow: rgba(56, 189, 248, 0.28);
       --shadow-glass: 0 16px 40px -4px rgba(0, 0, 0, 0.55), inset 0 1px 1px rgba(255, 255, 255, 0.15);
       --mirror-btn-bg: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0.14) 100%);
       --mirror-btn-shadow: 0 8px 20px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.35);
@@ -47,7 +47,7 @@
       -webkit-backdrop-filter: blur(22px) saturate(180%);
       border: 1px solid var(--glass-border);
       box-shadow: var(--shadow-glass);
-      border-radius: 22px;
+      border-radius: 20px;
     }
 
     .mirror-btn {
@@ -57,15 +57,16 @@
       border: 1px solid var(--glass-border);
       box-shadow: var(--mirror-btn-shadow);
       color: var(--text-primary);
-      padding: 10px 15px;
-      border-radius: 14px;
+      padding: 10px 14px;
+      border-radius: 13px;
       font-weight: 600;
-      font-size: 0.86rem;
+      font-size: 0.85rem;
       cursor: pointer;
-      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-      transition: transform 0.15s ease;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      transition: transform 0.15s ease, box-shadow 0.25s ease;
       overflow: hidden;
       user-select: none;
+      min-height: 40px;
     }
     .mirror-btn::after {
       content: ""; position: absolute; top: -50%; left: -60%; width: 40%; height: 200%;
@@ -73,7 +74,7 @@
       transform: rotate(25deg); transition: left 0.45s ease; pointer-events: none;
     }
     .mirror-btn:hover::after { left: 130%; }
-    .mirror-btn:active { transform: scale(0.95); }
+    .mirror-btn:active { transform: scale(0.96); }
     .mirror-btn.primary, .mirror-btn.active {
       background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
       color: #fff; border: 1px solid rgba(255,255,255,0.45);
@@ -81,132 +82,186 @@
     }
     .mirror-btn.danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: rgba(239, 68, 68, 0.35); }
 
-    .app-shell { display: flex; min-height: 100vh; padding: 16px; gap: 16px; }
-    .sidebar {
-      width: 250px; flex-shrink: 0; padding: 20px 14px;
-      display: flex; flex-direction: column; justify-content: space-between;
-      position: sticky; top: 16px; height: calc(100vh - 32px); z-index: 40;
+    /* Hiệu ứng phát sáng cho các nút & huy hiệu LIVE */
+    .live-glow-btn {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+      color: #fff !important;
+      border: 1px solid rgba(167, 243, 208, 0.65) !important;
+      animation: liveGlowPulse 2.2s infinite ease-in-out;
     }
-    .brand { display: flex; align-items: center; gap: 12px; padding: 4px 10px 20px; font-weight: 700; font-size: 1.15rem; }
-    .brand-icon { width: 36px; height: 36px; border-radius: 11px; background: linear-gradient(135deg, #38bdf8, #0284c7); display: grid; place-items: center; color: #fff; }
+    .cam-badge-live {
+      position: absolute; top: 10px; left: 10px; z-index: 12;
+      background: rgba(15, 23, 42, 0.72);
+      backdrop-filter: blur(10px);
+      color: #fff;
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid rgba(52, 211, 153, 0.55);
+      box-shadow: 0 0 14px rgba(16, 185, 129, 0.55);
+    }
+    .live-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #34d399;
+      box-shadow: 0 0 8px #34d399, 0 0 14px #10b981;
+      animation: dotBlink 1.4s infinite ease-in-out;
+    }
+    .live-dot.offline {
+      background: #f59e0b;
+      box-shadow: 0 0 8px #f59e0b;
+    }
+    @keyframes liveGlowPulse {
+      0%, 100% { box-shadow: 0 0 10px rgba(16, 185, 129, 0.45), 0 0 22px rgba(16, 185, 129, 0.2); }
+      50% { box-shadow: 0 0 18px rgba(16, 185, 129, 0.85), 0 0 32px rgba(16, 185, 129, 0.45); }
+    }
+    @keyframes dotBlink {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.82); }
+    }
+
+    .app-shell { display: flex; min-height: 100vh; padding: 14px; gap: 14px; max-width: 100vw; }
+    .sidebar {
+      width: 245px; flex-shrink: 0; padding: 18px 12px;
+      display: flex; flex-direction: column; justify-content: space-between;
+      position: sticky; top: 14px; height: calc(100vh - 28px); z-index: 40;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; font-weight: 700; font-size: 1.12rem; }
+    .brand-icon { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #38bdf8, #0284c7); display: grid; place-items: center; color: #fff; }
     .nav-list { display: flex; flex-direction: column; gap: 8px; }
     .nav-item {
-      display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 15px;
-      color: var(--text-secondary); font-weight: 600; font-size: 0.9rem; cursor: pointer;
+      display: flex; align-items: center; gap: 10px; padding: 11px 13px; border-radius: 14px;
+      color: var(--text-secondary); font-weight: 600; font-size: 0.88rem; cursor: pointer;
       border: 1px solid transparent; transition: all 0.2s ease;
     }
     .nav-item.active, .nav-item:hover { background: var(--glass-strong); color: var(--accent); border-color: var(--glass-border); }
 
-    .main-content { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-    .navbar { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .main-content { flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; width: 100%; }
+    .navbar { padding: 11px 16px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .nav-pills-wrap { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; flex: 1; min-width: 0; }
     .pill {
-      padding: 6px 12px; border-radius: 999px; font-size: 0.78rem; font-weight: 600;
+      padding: 6px 11px; border-radius: 999px; font-size: 0.76rem; font-weight: 600;
       background: var(--glass-strong); border: 1px solid var(--glass-border);
-      display: inline-flex; align-items: center; gap: 6px;
+      display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
     }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px var(--success); }
 
-    .view-section { display: none; flex-direction: column; gap: 16px; }
+    .view-section { display: none; flex-direction: column; gap: 14px; width: 100%; }
     .view-section.active { display: flex; }
 
     /* Live Grid Layouts */
-    .live-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
-    .cam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .live-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 14px; }
+    .cam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 14px; width: 100%; }
     .grid-1x1 { grid-template-columns: 1fr !important; }
     .grid-2x2 { grid-template-columns: repeat(2, 1fr) !important; }
     .grid-3x3 { grid-template-columns: repeat(3, 1fr) !important; }
 
-    .cam-card { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-    .video-box { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #050811; border-radius: 16px; overflow: hidden; }
-    .video-box video { width: 100%; height: 100%; object-fit: cover; transition: transform 0.2s ease; }
-    .cam-badge { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.55); backdrop-filter: blur(8px); color: #fff; padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+    .cam-card { padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .video-box { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #050811; border-radius: 14px; overflow: hidden; }
+    .video-box video, .video-box img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.2s ease; }
 
     /* PTZ Pad & Two-Way Talk */
     .ptz-pad {
-      position: absolute; bottom: 12px; right: 12px; z-index: 15;
-      display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px);
-      gap: 3px; background: rgba(15, 23, 42, 0.48); backdrop-filter: blur(10px);
-      padding: 5px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.25);
-      opacity: 0.85; transition: opacity 0.2s ease;
+      position: absolute; bottom: 10px; right: 10px; z-index: 15;
+      display: grid; grid-template-columns: repeat(3, 28px); grid-template-rows: repeat(3, 28px);
+      gap: 3px; background: rgba(15, 23, 42, 0.52); backdrop-filter: blur(10px);
+      padding: 4px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.25);
+      opacity: 0.88; transition: opacity 0.2s ease;
     }
     .ptz-pad:hover { opacity: 1; }
     .ptz-btn {
       background: rgba(255,255,255,0.18); border: none; color: #fff;
-      border-radius: 50%; cursor: pointer; font-size: 11px; font-weight: 700; display: grid; place-items: center;
+      border-radius: 50%; cursor: pointer; font-size: 10px; font-weight: 700; display: grid; place-items: center;
     }
     .ptz-btn:active { background: var(--accent); transform: scale(0.9); }
 
     .ptt-btn.recording { background: var(--danger) !important; color: #fff !important; animation: pulseTalk 1s infinite; }
     @keyframes pulseTalk { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); } 70% { box-shadow: 0 0 0 10px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
 
-    .playback-layout { display: grid; grid-template-columns: 1fr 310px; gap: 16px; }
+    .playback-layout { display: grid; grid-template-columns: 1fr 300px; gap: 14px; }
     .input-glass {
-      width: 100%; padding: 11px 14px; border-radius: 13px;
+      width: 100%; padding: 10px 13px; border-radius: 12px; min-height: 42px;
       border: 1px solid var(--glass-border); background: var(--glass-strong);
-      color: var(--text-primary); font-size: 0.9rem; outline: none;
+      color: var(--text-primary); font-size: 0.88rem; outline: none;
     }
-    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; }
 
-    /* Hộp gợi ý mật khẩu mặc định Camera */
     .cred-hint-box {
-      padding: 12px 15px;
-      border-radius: 15px;
+      padding: 12px 14px;
+      border-radius: 14px;
       background: var(--glass-strong);
       border: 1px dashed var(--accent);
       display: flex;
       flex-direction: column;
       gap: 8px;
-      font-size: 0.83rem;
+      font-size: 0.82rem;
     }
     .pwd-chip {
       padding: 4px 10px;
       border-radius: 999px;
-      font-size: 0.76rem;
+      font-size: 0.75rem;
       font-weight: 700;
       background: rgba(2, 132, 199, 0.14);
       color: var(--accent);
       border: 1px solid var(--accent);
       cursor: pointer;
-      transition: all 0.15s ease;
     }
     .pwd-chip:hover { background: var(--accent); color: #fff; }
 
     .qr-share-box {
-      display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
-      padding: 16px; border-radius: 18px; background: var(--glass-strong); border: 1px solid var(--glass-border);
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      padding: 14px; border-radius: 16px; background: var(--glass-strong); border: 1px solid var(--glass-border);
     }
     #qrcodeBox { padding: 10px; background: #ffffff; border-radius: 14px; box-shadow: 0 4px 14px rgba(0,0,0,0.08); flex-shrink: 0; }
 
-    .progress-track { width: 100%; height: 11px; background: rgba(148, 163, 184, 0.22); border-radius: 999px; overflow: hidden; margin: 10px 0; }
+    .progress-track { width: 100%; height: 11px; background: rgba(148, 163, 184, 0.22); border-radius: 999px; overflow: hidden; margin: 8px 0; }
     .progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #0284c7); border-radius: 999px; }
 
     .alert-banner {
-      position: fixed; top: 18px; right: 18px; z-index: 999;
-      max-width: 360px; padding: 14px 18px; border-left: 5px solid var(--danger);
+      position: fixed; top: 14px; right: 14px; left: auto; z-index: 999;
+      max-width: 350px; padding: 14px 16px; border-left: 5px solid var(--danger);
       display: none; animation: slideIn 0.3s ease;
     }
     @keyframes slideIn { from { transform: translateX(110%); } to { transform: translateX(0); } }
 
     .auth-modal {
       position: fixed; inset: 0; z-index: 1000;
-      background: rgba(15, 23, 42, 0.5); backdrop-filter: blur(20px);
-      display: flex; align-items: center; justify-content: center; padding: 16px;
+      background: rgba(15, 23, 42, 0.52); backdrop-filter: blur(20px);
+      display: flex; align-items: center; justify-content: center; padding: 14px;
     }
 
     .admin-only { display: none; }
     body.is-admin .admin-only { display: flex; }
     body.is-admin .nav-item.admin-only { display: flex; }
 
+    /* Tối ưu toàn diện bố cục Mobile (<= 860px) */
     @media (max-width: 860px) {
-      .app-shell { flex-direction: column; padding: 10px 10px 84px; }
+      .app-shell { flex-direction: column; padding: 10px 10px 92px; gap: 10px; }
       .sidebar {
-        position: fixed; bottom: 10px; left: 10px; right: 10px; top: auto;
-        width: auto; height: auto; flex-direction: row; padding: 8px; border-radius: 20px;
+        position: fixed; bottom: 8px; left: 8px; right: 8px; top: auto;
+        width: auto; height: auto; flex-direction: row; padding: 6px; border-radius: 18px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.22);
       }
       .brand, .sidebar-footer { display: none; }
-      .nav-list { flex-direction: row; width: 100%; justify-content: space-around; }
-      .nav-item { flex-direction: column; gap: 4px; padding: 8px 6px; font-size: 0.7rem; text-align: center; }
+      .nav-list { flex-direction: row; width: 100%; justify-content: space-between; gap: 2px; }
+      .nav-item {
+        flex: 1; flex-direction: column; justify-content: center; align-items: center;
+        gap: 3px; padding: 7px 2px; font-size: 0.67rem; text-align: center; border-radius: 12px;
+      }
+      .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+      .nav-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+      .navbar { padding: 10px 12px; }
+      .pill { font-size: 0.72rem; padding: 5px 9px; }
       .playback-layout, .grid-2x2, .grid-3x3 { grid-template-columns: 1fr !important; }
+      .form-grid { grid-template-columns: 1fr !important; }
+      .qr-share-box { flex-direction: column; align-items: stretch; text-align: center; }
+      #qrcodeBox { margin: 0 auto; }
+      .ptz-pad { grid-template-columns: repeat(3, 25px); grid-template-rows: repeat(3, 25px); bottom: 8px; right: 8px; }
+      .alert-banner { left: 10px; right: 10px; max-width: none; }
+      .live-toolbar { padding: 10px 12px; }
+      .live-toolbar .mirror-btn { padding: 8px 10px; font-size: 0.78rem; min-height: 36px; }
     }
   </style>
 </head>
@@ -220,15 +275,15 @@
 
   <!-- Màn hình Đăng nhập / Khởi tạo Quản trị viên -->
   <div id="authModal" class="auth-modal">
-    <div class="glass" style="width:100%; max-width:400px; padding:26px; display:flex; flex-direction:column; gap:14px;">
+    <div class="glass" style="width:100%; max-width:400px; padding:24px; display:flex; flex-direction:column; gap:12px;">
       <div style="text-align:center;">
         <h2 id="authHeading" style="font-size:1.35rem;">CamHub AI Pro</h2>
-        <p id="authSub" style="color:var(--text-secondary); font-size:0.85rem; margin-top:4px;">Khởi tạo tài khoản Quản trị viên lần đầu</p>
+        <p id="authSub" style="color:var(--text-secondary); font-size:0.84rem; margin-top:4px;">Khởi tạo tài khoản Quản trị viên lần đầu</p>
       </div>
       <input id="authDisplayName" class="input-glass" type="text" placeholder="Tên hiển thị (VD: Ba / Quản trị viên)" />
       <input id="authUser" class="input-glass" type="text" placeholder="Tên đăng nhập" autocomplete="username" />
       <input id="authPass" class="input-glass" type="password" placeholder="Mật khẩu bảo mật" autocomplete="current-password" />
-      <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; color:var(--text-secondary); cursor:pointer;">
+      <label style="display:flex; align-items:center; gap:8px; font-size:0.84rem; color:var(--text-secondary); cursor:pointer;">
         <input id="rememberMeCheck" type="checkbox" checked style="width:16px; height:16px; accent-color:var(--accent);" />
         <span>Lưu tài khoản & mật khẩu để tự động đăng nhập</span>
       </label>
@@ -261,7 +316,7 @@
           </div>
           <div class="nav-item admin-only" onclick="switchView('family', this)">
             <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-            <span>Gia đình & QR</span>
+            <span>Gia đình</span>
           </div>
           <div class="nav-item admin-only" onclick="switchView('setup', this)">
             <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -278,13 +333,13 @@
     <!-- Main Workspace -->
     <main class="main-content">
       <header class="glass navbar">
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <span class="pill"><span class="dot"></span> Server Online</span>
+        <div class="nav-pills-wrap">
+          <span class="pill"><span class="live-dot"></span> Server Online</span>
           <span class="pill" id="navStoragePill">Trống: -- GB</span>
           <span class="pill" id="deviceThermalPill">Pin: --% • --°C</span>
         </div>
-        <div style="display:flex; gap:8px; align-items:center;">
-          <button class="mirror-btn" onclick="toggleTheme()" title="Đổi giao diện Sáng / Tối">
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="mirror-btn" onclick="toggleTheme()" title="Đổi giao diện Sáng / Tối" style="padding:8px 10px;">
             <svg id="themeIcon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
             </svg>
@@ -293,14 +348,14 @@
         </div>
       </header>
 
-      <!-- VIEW 1: LIVE CAMERAS (GRID 1x1, 2x2, 3x3 + PTZ + TALK + FULLSCREEN) -->
+      <!-- VIEW 1: LIVE CAMERAS (GRID 1x1, 2x2, 3x3 + MULTI-LENS + REALTIME STREAM) -->
       <section id="view-live" class="view-section active">
         <div class="glass live-toolbar">
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <span style="font-size:0.84rem; font-weight:700; color:var(--text-secondary);">Hiển thị lưới:</span>
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <button class="mirror-btn live-glow-btn" onclick="loadCameras()">● LIVE</button>
             <button class="mirror-btn grid-opt" onclick="setGridLayout('grid-1x1', this)">1x1</button>
-            <button class="mirror-btn grid-opt active" onclick="setGridLayout('grid-2x2', this)">2x2 (4 Cam)</button>
-            <button class="mirror-btn grid-opt" onclick="setGridLayout('grid-3x3', this)">3x3 (9 Cam)</button>
+            <button class="mirror-btn grid-opt active" onclick="setGridLayout('grid-2x2', this)">2x2</button>
+            <button class="mirror-btn grid-opt" onclick="setGridLayout('grid-3x3', this)">3x3</button>
           </div>
           <button class="mirror-btn primary" onclick="toggleGridFullscreen()">Toàn màn hình</button>
         </div>
@@ -310,10 +365,10 @@
       <!-- VIEW 2: PLAYBACK TUA NHANH 16X -->
       <section id="view-playback" class="view-section">
         <div class="playback-layout">
-          <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:12px;">
+          <div class="glass" style="padding:14px; display:flex; flex-direction:column; gap:12px;">
             <div class="video-box">
               <video id="playbackVideo" controls playsinline></video>
-              <span class="cam-badge" id="playbackSpeedBadge">Tốc độ: 1x</span>
+              <span class="cam-badge-live" id="playbackSpeedBadge" style="border-color:rgba(255,255,255,0.25); box-shadow:none;">Tốc độ: 1x</span>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
               <div style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -332,7 +387,7 @@
               </div>
             </div>
           </div>
-          <div class="glass" style="padding:16px; max-height:520px; overflow-y:auto;">
+          <div class="glass" style="padding:14px; max-height:500px; overflow-y:auto;">
             <h3 style="font-size:1rem; margin-bottom:10px;">Bản ghi đã lưu</h3>
             <div id="recordingList" style="display:flex; flex-direction:column; gap:8px;"></div>
           </div>
@@ -341,7 +396,7 @@
 
       <!-- VIEW 3: AI ALERTS -->
       <section id="view-alerts" class="view-section">
-        <div class="glass" style="padding:18px;">
+        <div class="glass" style="padding:16px;">
           <h3 style="margin-bottom:12px;">Cảnh báo Chuyển động & Té ngã</h3>
           <div id="alertsContainer" class="cam-grid"></div>
         </div>
@@ -349,30 +404,30 @@
 
       <!-- VIEW 4: GIA ĐÌNH & CHIA SẺ QR CODE (ADMIN) -->
       <section id="view-family" class="view-section">
-        <div class="glass" style="padding:20px; display:flex; flex-direction:column; gap:14px;">
+        <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:12px;">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div>
               <h3>Đường hầm Truy cập Từ xa (Miễn phí & Bảo mật)</h3>
-              <p style="font-size:0.84rem; color:var(--text-secondary);">Chia sẻ đường link hoặc mã QR bên dưới cho người thân để xem camera qua 4G/5G</p>
+              <p style="font-size:0.82rem; color:var(--text-secondary);">Chia sẻ link hoặc mã QR bên dưới cho người thân xem camera qua 4G/5G</p>
             </div>
             <button class="mirror-btn" onclick="restartTunnel()">Làm mới Tunnel</button>
           </div>
 
           <div class="qr-share-box">
             <div id="qrcodeBox"></div>
-            <div style="flex:1; min-width:220px; display:flex; flex-direction:column; gap:10px;">
-              <label style="font-size:0.82rem; font-weight:700; color:var(--text-secondary);">LINK TRUY CẬP TỪ XA:</label>
+            <div style="flex:1; min-width:200px; display:flex; flex-direction:column; gap:10px;">
+              <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">LINK TRUY CẬP TỪ XA:</label>
               <input id="remoteLinkInput" class="input-glass" readonly value="Đang khởi tạo đường hầm..." />
-              <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                <button class="mirror-btn primary" onclick="copyRemoteLink()">Sao chép Link</button>
-                <button class="mirror-btn" onclick="shareRemoteLink()">Chia sẻ cho Gia đình</button>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="mirror-btn primary" style="flex:1;" onclick="copyRemoteLink()">Sao chép Link</button>
+                <button class="mirror-btn" style="flex:1;" onclick="shareRemoteLink()">Chia sẻ</button>
               </div>
             </div>
           </div>
 
           <details style="margin-top:4px;">
-            <summary style="cursor:pointer; font-size:0.86rem; font-weight:600; color:var(--accent);">Nâng cao: Gắn tên miền cố định vĩnh viễn (Cloudflare Named Tunnel)</summary>
-            <div class="form-grid" style="margin-top:12px;">
+            <summary style="cursor:pointer; font-size:0.84rem; font-weight:600; color:var(--accent);">Nâng cao: Gắn tên miền cố định (Cloudflare Named Tunnel)</summary>
+            <div class="form-grid" style="margin-top:10px;">
               <input id="cfDomainInput" class="input-glass" placeholder="Tên miền cố định (VD: https://cam.nhacuatui.com)" />
               <input id="cfTokenInput" type="password" class="input-glass" placeholder="Dán Cloudflare Tunnel Token tại đây" />
               <button class="mirror-btn primary" onclick="saveTunnelToken()">Kích hoạt Link cố định</button>
@@ -380,7 +435,7 @@
           </details>
         </div>
 
-        <div class="glass" style="padding:20px; display:flex; flex-direction:column; gap:14px;">
+        <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:12px;">
           <h3>Tạo tài khoản cho Thành viên Gia đình</h3>
           <div class="form-grid">
             <input id="famDisplayName" class="input-glass" placeholder="Tên gọi (VD: Mẹ, Vợ, Em trai)" />
@@ -388,43 +443,50 @@
             <input id="famPassword" type="password" class="input-glass" placeholder="Mật khẩu cấp cho thành viên" />
             <button class="mirror-btn primary" onclick="addFamilyMember()">+ Cấp tài khoản</button>
           </div>
-          <div id="familyList" style="display:flex; flex-direction:column; gap:8px; margin-top:8px;"></div>
+          <div id="familyList" style="display:flex; flex-direction:column; gap:8px; margin-top:6px;"></div>
         </div>
       </section>
 
-      <!-- VIEW 5: CÀI ĐẶT WIFI, CAMERA, DUNG LƯỢNG, TELEGRAM & BẢO MẬT (ADMIN) -->
+      <!-- VIEW 5: CÀI ĐẶT WIFI, CAMERA ĐA MẮT, DUNG LƯỢNG, TELEGRAM & BẢO MẬT (ADMIN) -->
       <section id="view-setup" class="view-section">
-        <div class="glass" style="padding:18px;">
+        <div class="glass" style="padding:16px;">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <h3>Bộ nhớ lưu trữ xoay vòng</h3>
-            <span id="storageDetailText" style="font-size:0.85rem; color:var(--text-secondary);">--</span>
+            <span id="storageDetailText" style="font-size:0.82rem; color:var(--text-secondary);">--</span>
           </div>
           <div class="progress-track"><div id="storageBar" class="progress-fill" style="width: 20%;"></div></div>
-          <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
-            <label style="font-size:0.86rem; font-weight:600;">Số ngày lưu tối đa:</label>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap;">
+            <label style="font-size:0.84rem; font-weight:600;">Số ngày lưu tối đa:</label>
             <input id="retentionInput" type="number" value="30" min="1" max="365" class="input-glass" style="width:90px;" />
             <button class="mirror-btn primary" onclick="saveRetention()">Lưu</button>
           </div>
         </div>
 
-        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:12px;">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h3>1. Kết nối Wi-Fi cho Trạm Chủ</h3>
-            <button class="mirror-btn" onclick="scanWifi()">Quét Wi-Fi xung quanh</button>
+        <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <h3>1. Mạng Wi-Fi / LAN thực tế của Trạm Chủ</h3>
+            <button class="mirror-btn" onclick="scanWifi()">Đọc tín hiệu Wi-Fi thực tế</button>
+          </div>
+          <div id="currentNetworkInfo" style="font-size:0.82rem; color:var(--text-secondary); padding:8px 12px; border-radius:12px; background:var(--glass-strong);">
+            Nhấn "Đọc tín hiệu Wi-Fi thực tế" để kiểm tra mạng hiện tại của thiết bị.
           </div>
           <div class="form-grid">
-            <select id="wifiSelect" class="input-glass"><option value="">-- Chọn mạng Wi-Fi --</option></select>
+            <select id="wifiSelect" class="input-glass"><option value="">-- Mạng Wi-Fi phát hiện --</option></select>
             <input id="wifiPass" type="password" class="input-glass" placeholder="Nhập mật khẩu Wi-Fi" />
             <button class="mirror-btn primary" onclick="connectWifi()">Kết nối Wi-Fi</button>
           </div>
         </div>
 
-        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:12px;">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h3>2. Quét & Thêm Camera trong mạng Wi-Fi</h3>
-            <button class="mirror-btn" onclick="discoverCameras()">Quét Camera LAN</button>
+        <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <h3>2. Quét & Thêm Camera (Hỗ trợ Camera nhiều mắt)</h3>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="mirror-btn" onclick="discoverCameras()">Quét Camera LAN</button>
+              <button class="mirror-btn" onclick="probeSelectedCamera()">Dò MK & Kiểm tra RTSP</button>
+            </div>
           </div>
           <div id="discoveredList" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+          <div id="probeStatusBanner" style="display:none; padding:10px 12px; border-radius:12px; font-size:0.82rem; font-weight:600;"></div>
           <div class="form-grid">
             <input id="camName" class="input-glass" placeholder="Tên vị trí (VD: Phòng khách)" />
             <input id="camIp" class="input-glass" placeholder="IP Camera (VD: 192.168.1.64)" />
@@ -438,16 +500,25 @@
               <option value="tapo">TP-Link Tapo</option>
               <option value="custom">ONVIF / Hãng khác</option>
             </select>
+            <select id="camStreamProfile" class="input-glass" title="Chọn luồng truyền tối ưu">
+              <option value="sub">Luồng phụ (Mượt, tối ưu AI & nhiều mắt)</option>
+              <option value="main">Luồng chính (Nét cao HD/FullHD)</option>
+            </select>
+            <select id="camLensCount" class="input-glass" title="Số mắt camera trên 1 thiết bị">
+              <option value="1">1 mắt cam (Tiêu chuẩn)</option>
+              <option value="2">2 mắt cam (Dual-Lens / Kép)</option>
+              <option value="3">3 mắt cam (Triple-Lens)</option>
+              <option value="4">4 mắt cam / Đầu ghi 4 kênh</option>
+            </select>
             <input id="camUser" class="input-glass" value="admin" placeholder="Tài khoản Camera (Mặc định: admin)" />
             <div style="position:relative; display:flex; align-items:center;">
-              <input id="camPass" type="password" class="input-glass" style="padding-right:42px;" placeholder="Mật khẩu / Safety / Verification Code" />
+              <input id="camPass" type="password" class="input-glass" style="padding-right:46px;" placeholder="Mật khẩu / Safety / Verification Code" />
               <button type="button" onclick="toggleCamPassVisibility()" title="Hiện / Ẩn mật khẩu"
-                style="position:absolute; right:10px; background:none; border:none; color:var(--text-secondary); cursor:pointer; font-size:0.85rem; font-weight:700;">Hiện</button>
+                style="position:absolute; right:10px; background:none; border:none; color:var(--text-secondary); cursor:pointer; font-size:0.82rem; font-weight:700;">Hiện</button>
             </div>
             <button class="mirror-btn primary" onclick="addCamera()">Tự động cấu hình & Thêm</button>
           </div>
 
-          <!-- Khung gợi ý mật khẩu mặc định & bấm điền nhanh theo từng hãng Camera -->
           <div id="camBrandHintBox" class="cred-hint-box">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
               <strong id="hintBrandTitle" style="color:var(--accent);">💡 Gợi ý mật khẩu mặc định cho Camera Imou:</strong>
@@ -457,11 +528,11 @@
           </div>
         </div>
 
-        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:12px;">
+        <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:10px;">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div>
               <h3>3. Thông báo Cảnh báo qua Telegram Bot</h3>
-              <p style="font-size:0.83rem; color:var(--text-secondary);">Tự động gửi hình ảnh khoảnh khắc té ngã & chuyển động về điện thoại</p>
+              <p style="font-size:0.82rem; color:var(--text-secondary);">Tự động gửi hình ảnh khoảnh khắc té ngã & chuyển động về điện thoại</p>
             </div>
             <button class="mirror-btn" onclick="testTelegram()">Gửi tin thử nghiệm</button>
           </div>
@@ -469,7 +540,7 @@
             <input id="tgBotToken" type="password" class="input-glass" placeholder="Bot Token (từ @BotFather)" />
             <input id="tgChatId" class="input-glass" placeholder="Chat ID hoặc Group ID gia đình" />
           </div>
-          <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:0.86rem;">
+          <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:0.84rem;">
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
               <input id="tgFallCheck" type="checkbox" checked style="accent-color:var(--accent);" /> Cảnh báo Té ngã (Khẩn cấp)
             </label>
@@ -480,7 +551,7 @@
           <div><button class="mirror-btn primary" onclick="saveTelegramConfig()">Lưu cấu hình Telegram</button></div>
         </div>
 
-        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:14px;">
+        <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:12px;">
           <h3>4. Bảo mật Tài khoản & Nhật ký Đăng nhập</h3>
           <div class="form-grid">
             <input id="oldPassInput" type="password" class="input-glass" placeholder="Mật khẩu hiện tại" />
@@ -488,12 +559,12 @@
             <button class="mirror-btn primary" onclick="changePassword()">Đổi mật khẩu</button>
           </div>
 
-          <div style="margin-top:6px;">
+          <div style="margin-top:4px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-              <strong style="font-size:0.88rem;">Lịch sử truy cập gần đây (IP & Thiết bị)</strong>
-              <button class="mirror-btn" style="padding:6px 12px; font-size:0.78rem;" onclick="loadLoginLogs()">Làm mới</button>
+              <strong style="font-size:0.86rem;">Lịch sử truy cập gần đây (IP & Thiết bị)</strong>
+              <button class="mirror-btn" style="padding:6px 10px; font-size:0.76rem; min-height:32px;" onclick="loadLoginLogs()">Làm mới</button>
             </div>
-            <div id="loginLogsList" style="display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto;"></div>
+            <div id="loginLogsList" style="display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto;"></div>
           </div>
         </div>
       </section>
@@ -552,7 +623,7 @@
         user: "admin",
         passwords: ["123", "123456", "888888", "admin"],
         placeholder: "Mật khẩu RTSP (Mặc định: 123 hoặc 888888)",
-        guide: "Mật khẩu luồng RTSP mặc định thường là '123' hoặc '888888'. Lưu ý bật công tắc 'RTSP / Kết nối NVR' trong ứng dụng Yoosee."
+        guide: "Mật khẩu luồng RTSP mặc định thường là '123' hoặc '888888'. Camera 2-3 mắt chọn đúng số mắt tương ứng ở ô bên cạnh."
       },
       tapo: {
         label: "TP-Link Tapo",
@@ -580,19 +651,15 @@
     }
 
     function encodeUtf8Base64(str) {
-      try {
-        return btoa(encodeURIComponent(str));
-      } catch (e) {
-        return "";
-      }
+      try { return btoa(encodeURIComponent(str)); } catch (e) { return ""; }
     }
 
     function decodeUtf8Base64(b64) {
-      try {
-        return decodeURIComponent(atob(b64));
-      } catch (e) {
-        try { return atob(b64); } catch (_) { return ""; }
-      }
+      try { return decodeURIComponent(atob(b64)); } catch (e) { try { return atob(b64); } catch (_) { return ""; } }
+    }
+
+    function getJwtToken() {
+      return localStorage.getItem("camhub_jwt") || sessionStorage.getItem("camhub_jwt") || "";
     }
 
     function updateCameraBrandHint() {
@@ -601,16 +668,14 @@
       const userField = document.getElementById("camUser");
       const passField = document.getElementById("camPass");
 
-      if (!userField.value || userField.value === "admin") {
-        userField.value = info.user;
-      }
+      if (!userField.value || userField.value === "admin") userField.value = info.user;
       passField.placeholder = info.placeholder;
 
       document.getElementById("hintBrandTitle").innerText = `💡 Gợi ý mật khẩu mặc định (${info.label}):`;
       document.getElementById("hintBrandGuide").innerText = info.guide;
 
       const chipsContainer = document.getElementById("hintPwdChips");
-      chipsContainer.innerHTML = `<span style="font-size:0.76rem; color:var(--text-secondary);">Điền nhanh:</span>` +
+      chipsContainer.innerHTML = `<span style="font-size:0.75rem; color:var(--text-secondary);">Điền nhanh:</span>` +
         info.passwords.map(p => {
           const safeP = escapeHtml(p);
           return `<button type="button" class="pwd-chip" onclick="fillDefaultCameraCred('${escapeHtml(info.user)}', '${safeP}')">${safeP}</button>`;
@@ -639,7 +704,7 @@
     function getAuthHeaders() {
       return {
         "Content-Type": "application/json",
-        "Authorization": "Bearer " + (localStorage.getItem("camhub_jwt") || sessionStorage.getItem("camhub_jwt") || "")
+        "Authorization": "Bearer " + getJwtToken()
       };
     }
 
@@ -672,7 +737,7 @@
       if (name === "playback") loadRecordings();
       if (name === "alerts") loadAlerts();
       if (name === "family") { loadTunnelInfo(); loadFamilyMembers(); }
-      if (name === "setup") { updateCameraBrandHint(); loadSecurityAndTelegram(); }
+      if (name === "setup") { updateCameraBrandHint(); scanWifi(); loadSecurityAndTelegram(); }
     }
 
     function loadSavedCredentials() {
@@ -695,7 +760,7 @@
         }
       } catch (e) {}
 
-      const token = localStorage.getItem("camhub_jwt") || sessionStorage.getItem("camhub_jwt");
+      const token = getJwtToken();
       if (token) {
         const test = await fetch("/api/cameras", { headers: getAuthHeaders() });
         if (test.ok) {
@@ -903,7 +968,7 @@
       if (!res.ok) return;
       const data = await res.json();
       document.getElementById("familyList").innerHTML = data.members.map(m => `
-        <div class="glass" style="padding:12px 16px; display:flex; justify-content:space-between; align-items:center; border-radius:14px;">
+        <div class="glass" style="padding:12px 14px; display:flex; justify-content:space-between; align-items:center; border-radius:14px;">
           <div>
             <strong>${escapeHtml(m.display_name)}</strong> <span style="font-size:0.82rem; color:var(--text-secondary);">(@${escapeHtml(m.username)})</span>
             <div style="font-size:0.75rem; color:var(--accent);">${m.role === 'admin' ? 'Quản trị viên' : 'Thành viên xem trực tiếp'}</div>
@@ -936,19 +1001,38 @@
       loadFamilyMembers();
     }
 
-    // --- WIFI & CAMERAS ---
+    // --- WIFI (REAL NETWORK INFO) & CAMERAS ---
     async function scanWifi() {
       const sel = document.getElementById("wifiSelect");
-      sel.innerHTML = "<option>Đang quét mạng Wi-Fi...</option>";
+      const infoBox = document.getElementById("currentNetworkInfo");
+      sel.innerHTML = "<option>Đang đọc tín hiệu mạng thực tế...</option>";
       const res = await apiFetch("/api/wifi/scan", { headers: getAuthHeaders() });
       if (!res.ok) return;
       const data = await res.json();
-      sel.innerHTML = data.networks.map(n => `<option value="${escapeHtml(n.ssid)}">${escapeHtml(n.ssid)} (${Number(n.rssi)} dBm)</option>`).join("");
+      const cur = data.current || {};
+
+      infoBox.innerHTML = `
+        <strong>Mạng hiện tại:</strong> ${cur.ssid ? escapeHtml(cur.ssid) : 'Đang kết nối LAN/Wi-Fi'}
+        • <strong>IP Trạm chủ:</strong> ${escapeHtml(cur.ip || '--')}
+        • <strong>Dải quét Camera:</strong> ${escapeHtml(cur.subnet || '--')}
+        ${data.note ? `<div style="margin-top:4px; color:var(--warning); font-size:0.78rem;">${escapeHtml(data.note)}</div>` : ''}
+      `;
+
+      if (data.networks && data.networks.length) {
+        sel.innerHTML = data.networks.map(n => {
+          const tag = n.connected ? " [Đang kết nối]" : "";
+          const freq = n.frequency_mhz ? ` • ${n.frequency_mhz > 4000 ? '5GHz' : '2.4GHz'}` : "";
+          return `<option value="${escapeHtml(n.ssid)}">${escapeHtml(n.ssid)} (${Number(n.rssi)} dBm${freq})${tag}</option>`;
+        }).join("");
+      } else {
+        sel.innerHTML = `<option value="">Không đọc được SSID (IP hiện tại: ${escapeHtml(cur.ip || '--')})</option>`;
+      }
     }
 
     async function connectWifi() {
       const ssid = document.getElementById("wifiSelect").value;
       const password = document.getElementById("wifiPass").value;
+      if (!ssid) return alert("Chưa chọn mạng Wi-Fi hợp lệ.");
       const res = await apiFetch("/api/wifi/connect", {
         method: "POST",
         headers: getAuthHeaders(),
@@ -962,6 +1046,16 @@
         try { hls.destroy(); } catch (_) {}
       });
       activeHlsInstances = [];
+    }
+
+    function switchToMjpegFallback(camId) {
+      const video = document.getElementById("vid_" + camId);
+      const img = document.getElementById("mjpeg_" + camId);
+      if (!img) return;
+      if (video) video.style.display = "none";
+      img.style.display = "block";
+      const token = encodeURIComponent(getJwtToken());
+      img.src = `/api/cameras/${encodeURIComponent(camId)}/mjpeg?token=${token}&t=${Date.now()}`;
     }
 
     async function loadCameras() {
@@ -979,11 +1073,17 @@
       }
       grid.innerHTML = data.cameras.map(c => {
         const safeId = escapeHtml(c.id);
+        const profileTag = c.stream_profile === "main" ? "HD" : "Mượt";
+        const chTag = c.channel > 1 ? ` • Mắt ${c.channel}` : "";
         return `
         <div class="glass cam-card">
           <div class="video-box" id="box_${safeId}">
-            <video id="vid_${safeId}" autoplay muted playsinline></video>
-            <span class="cam-badge">● LIVE • ${escapeHtml(c.name)}</span>
+            <video id="vid_${safeId}" autoplay muted playsinline style="display:none;"></video>
+            <img id="mjpeg_${safeId}" alt="${escapeHtml(c.name)}" />
+            <span class="cam-badge-live">
+              <span class="live-dot ${c.online ? '' : 'offline'}"></span>
+              LIVE • ${escapeHtml(c.name)}
+            </span>
 
             <div class="ptz-pad" title="Điều khiển xoay Camera">
               <div></div>
@@ -998,43 +1098,127 @@
             </div>
           </div>
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
-            <span style="font-size:0.8rem; color:var(--text-secondary);">${escapeHtml(c.brand.toUpperCase())} • ${escapeHtml(c.ip)}</span>
-            <div style="display:flex; gap:6px;">
-              <button class="mirror-btn ptt-btn" style="padding:5px 10px; font-size:0.76rem;"
+            <span style="font-size:0.78rem; color:var(--text-secondary);">${escapeHtml(c.brand.toUpperCase())}${chTag} • ${profileTag} • ${escapeHtml(c.ip)}</span>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="mirror-btn ptt-btn" style="padding:6px 10px; font-size:0.75rem; min-height:34px;"
                 onmousedown="startTalking('${safeId}', this, event)" onmouseup="stopTalking(this, event)" onmouseleave="stopTalking(this, event)"
                 ontouchstart="startTalking('${safeId}', this, event)" ontouchend="stopTalking(this, event)" ontouchcancel="stopTalking(this, event)">Giữ để nói</button>
-              <button class="mirror-btn" style="padding:5px 10px; font-size:0.76rem;" onclick="toggleSingleCamFullscreen('${safeId}')">Phóng to</button>
-              ${isAdmin ? `<button class="mirror-btn danger" style="padding:5px 10px; font-size:0.76rem;" onclick="deleteCamera('${safeId}')">Xóa</button>` : ''}
+              <button class="mirror-btn live-glow-btn" style="padding:6px 10px; font-size:0.75rem; min-height:34px;" onclick="toggleSingleCamFullscreen('${safeId}')">Phóng to</button>
+              ${isAdmin ? `<button class="mirror-btn danger" style="padding:6px 10px; font-size:0.75rem; min-height:34px;" onclick="deleteCamera('${safeId}')">Xóa</button>` : ''}
             </div>
           </div>
         </div>
       `}).join("");
 
       data.cameras.forEach(c => {
+        // Mặc định dùng luồng MJPEG Realtime trực tiếp từ OpenCV/FastAPI để chạy ngay cả khi không bật MediaMTX,
+        // đồng thời nếu MediaMTX HLS sẵn sàng có thể nâng cấp sang HLS mượt mà
+        switchToMjpegFallback(c.id);
+
         const video = document.getElementById("vid_" + c.id);
-        if (!video) return;
         const hlsUrl = `/hls/${encodeURIComponent(c.id)}/index.m3u8`;
-        if (typeof Hls !== "undefined" && Hls.isSupported()) {
-          const hls = new Hls({ lowLatencyMode: true });
-          hls.loadSource(hlsUrl);
-          hls.attachMedia(video);
-          activeHlsInstances.push(hls);
-        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-          video.src = hlsUrl;
+        if (video && typeof Hls !== "undefined" && Hls.isSupported()) {
+          fetch(hlsUrl).then(r => {
+            if (!r.ok) return;
+            const hls = new Hls({ lowLatencyMode: true });
+            hls.loadSource(hlsUrl);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              const img = document.getElementById("mjpeg_" + c.id);
+              if (img) { img.src = ""; img.style.display = "none"; }
+              video.style.display = "block";
+            });
+            hls.on(Hls.Events.ERROR, (_e, errData) => {
+              if (errData && errData.fatal) {
+                try { hls.destroy(); } catch (_) {}
+                switchToMjpegFallback(c.id);
+              }
+            });
+            activeHlsInstances.push(hls);
+          }).catch(() => {});
         }
       });
     }
 
+    function applyDiscoveredDevice(ip, brand, user, pass, detectedChannels) {
+      document.getElementById("camIp").value = ip;
+      if (brand && document.querySelector(`#camBrand option[value="${brand}"]`)) {
+        document.getElementById("camBrand").value = brand;
+        updateCameraBrandHint();
+      }
+      if (user) document.getElementById("camUser").value = user;
+      if (pass) {
+        const passField = document.getElementById("camPass");
+        passField.value = pass;
+        passField.type = "text";
+      }
+      if (detectedChannels && detectedChannels >= 1 && detectedChannels <= 4) {
+        document.getElementById("camLensCount").value = String(detectedChannels);
+      }
+    }
+
     async function discoverCameras() {
       const box = document.getElementById("discoveredList");
-      box.innerHTML = "<span>Đang dò tìm IP camera...</span>";
+      box.innerHTML = "<span>Đang quét mạng LAN và dò mật khẩu / số mắt camera...</span>";
       const res = await apiFetch("/api/cameras/discover", { headers: getAuthHeaders() });
       if (!res.ok) return;
       const data = await res.json();
       box.innerHTML = data.devices.map(d => {
         const safeIp = escapeHtml(d.ip);
-        return `<button class="mirror-btn" onclick="document.getElementById('camIp').value='${safeIp}'">IP: ${safeIp}</button>`;
-      }).join("") || "<span>Không tự tìm thấy, hãy nhập tay bên dưới.</span>";
+        const safeBrand = escapeHtml(d.matched_brand || "");
+        const safeUser = escapeHtml(d.matched_user || "admin");
+        const safePass = escapeHtml(d.matched_pass || "");
+        const chNum = Number(d.detected_channels || 1);
+        const badge = d.authenticated
+          ? ` • ✅ MK: ${safePass} (${chNum} mắt)`
+          : ` • 🔒 Cần nhập mã`;
+        return `<button class="mirror-btn ${d.authenticated ? 'primary' : ''}" onclick="applyDiscoveredDevice('${safeIp}', '${safeBrand}', '${safeUser}', '${safePass}', ${chNum})">IP: ${safeIp}${badge}</button>`;
+      }).join("") || `<span>Không tìm thấy thiết bị mở cổng 554 trong dải ${escapeHtml(data.subnet || '')}. Hãy nhập IP thủ công bên dưới.</span>`;
+    }
+
+    async function probeSelectedCamera() {
+      const ip = document.getElementById("camIp").value.trim();
+      if (!ip) return alert("Vui lòng nhập địa chỉ IP Camera trước khi dò mật khẩu!");
+      const brand = document.getElementById("camBrand").value;
+      const cam_user = document.getElementById("camUser").value.trim() || "admin";
+      const cam_pass = document.getElementById("camPass").value.trim();
+      const stream_profile = document.getElementById("camStreamProfile").value;
+
+      const banner = document.getElementById("probeStatusBanner");
+      banner.style.display = "block";
+      banner.style.background = "var(--glass-strong)";
+      banner.style.color = "var(--accent)";
+      banner.innerText = `⏳ Đang kiểm tra cổng 554 và dò mật khẩu mặc định cho ${ip}...`;
+
+      const res = await apiFetch("/api/cameras/probe", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ip, brand, cam_user, cam_pass, auto_try_defaults: true, stream_profile })
+      });
+      if (!res.ok) {
+        banner.style.color = "var(--danger)";
+        banner.innerText = "❌ Địa chỉ IP không hợp lệ hoặc không thể kiểm tra.";
+        return;
+      }
+      const data = await res.json();
+      if (data.authenticated) {
+        banner.style.color = "var(--success)";
+        banner.innerText = `✅ ${data.message}`;
+        document.getElementById("camUser").value = data.matched_user;
+        const passField = document.getElementById("camPass");
+        passField.value = data.matched_pass;
+        passField.type = "text";
+        if (data.matched_brand && document.querySelector(`#camBrand option[value="${data.matched_brand}"]`)) {
+          document.getElementById("camBrand").value = data.matched_brand;
+          updateCameraBrandHint();
+        }
+        if (data.detected_channels && data.detected_channels >= 1 && data.detected_channels <= 4) {
+          document.getElementById("camLensCount").value = String(data.detected_channels);
+        }
+      } else {
+        banner.style.color = data.reachable ? "var(--warning)" : "var(--danger)";
+        banner.innerText = `${data.reachable ? '⚠️' : '❌'} ${data.message}`;
+      }
     }
 
     async function addCamera() {
@@ -1043,13 +1227,19 @@
         ip: document.getElementById("camIp").value.trim(),
         brand: document.getElementById("camBrand").value,
         cam_user: document.getElementById("camUser").value.trim(),
-        cam_pass: document.getElementById("camPass").value.trim()
+        cam_pass: document.getElementById("camPass").value.trim(),
+        lens_count: parseInt(document.getElementById("camLensCount").value || "1", 10),
+        stream_profile: document.getElementById("camStreamProfile").value
       };
       if (!payload.ip) return alert("Vui lòng nhập IP Camera");
       const res = await apiFetch("/api/cameras", { method: "POST", headers: getAuthHeaders(), body: JSON.stringify(payload) });
       if (!res.ok) return alert("Không thể thêm camera, vui lòng kiểm tra lại định dạng IP!");
+      const data = await res.json();
+      if (data.authenticated && data.matched_pass) {
+        document.getElementById("camPass").value = data.matched_pass;
+      }
       loadCameras();
-      alert("Đã thêm camera thành công!");
+      alert(`Đã thêm ${data.lens_count || 1} mắt camera thành công!\n(${data.probe_message || ''})`);
     }
 
     async function deleteCamera(id) {
