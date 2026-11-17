@@ -6,6 +6,7 @@ import uuid
 import subprocess
 import threading
 from datetime import datetime
+from typing import Optional
 import cv2
 
 try:
@@ -24,7 +25,10 @@ class CameraAIProcessor:
         self.on_alert = on_alert_callback
         self.workers = {}
         self.workers_lock = threading.Lock()
-        self.thermal_delay = 0.15  # Mặc định ~6 FPS
+        self.latest_frames = {}
+        self.frames_lock = threading.Lock()
+        self.camera_status = {}
+        self.thermal_delay = 0.12  # Mặc định ~8 FPS
         os.makedirs("snapshots", exist_ok=True)
 
         self.mp_pose = mp.solutions.pose if HAS_MEDIAPIPE else None
@@ -41,9 +45,9 @@ class CameraAIProcessor:
                 ).decode("utf-8")
                 temp = float(json.loads(raw).get("temperature", 35.0))
                 if temp >= 43.0:
-                    self.thermal_delay = 0.50
+                    self.thermal_delay = 0.45
                 elif temp <= 38.5:
-                    self.thermal_delay = 0.15
+                    self.thermal_delay = 0.12
             except Exception:
                 pass
             time.sleep(20)
@@ -51,6 +55,8 @@ class CameraAIProcessor:
     def start_camera_monitor(self, cam_id: str, cam_name: str, rtsp_url: str):
         self.stop_camera_monitor(cam_id)
         stop_event = threading.Event()
+        with self.frames_lock:
+            self.camera_status[cam_id] = {"online": False, "fps": 0.0, "last_frame_ts": 0.0}
         t = threading.Thread(
             target=self._process_loop,
             args=(cam_id, cam_name, rtsp_url, stop_event),
@@ -66,6 +72,17 @@ class CameraAIProcessor:
         if worker:
             stop_event, _ = worker
             stop_event.set()
+        with self.frames_lock:
+            self.latest_frames.pop(cam_id, None)
+            self.camera_status.pop(cam_id, None)
+
+    def get_latest_jpeg(self, cam_id: str) -> Optional[bytes]:
+        with self.frames_lock:
+            return self.latest_frames.get(cam_id)
+
+    def get_camera_status(self, cam_id: str) -> dict:
+        with self.frames_lock:
+            return dict(self.camera_status.get(cam_id, {"online": False, "fps": 0.0, "last_frame_ts": 0.0}))
 
     def _calculate_body_angle(self, landmarks):
         l_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
@@ -73,7 +90,6 @@ class CameraAIProcessor:
         l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
         r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
 
-        # Kiểm tra độ tin cậy (visibility) của các khớp chính để tránh báo giả khi khuất hình
         if min(l_shoulder.visibility, r_shoulder.visibility, l_hip.visibility, r_hip.visibility) < 0.35:
             return 0.0
 
@@ -87,7 +103,7 @@ class CameraAIProcessor:
         return math.degrees(math.atan2(dx, dy))
 
     def _detect_horizontal_posture_fallback(self, fg_mask) -> bool:
-        """Fallback phát hiện tư thế nằm ngang bằng hình học Contour khi thiết bị không hỗ trợ MediaPipe."""
+        """Fallback phát hiện tư thế nằm ngang bằng hình học Contour khi thiết bị không dùng MediaPipe."""
         contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return False
@@ -103,7 +119,6 @@ class CameraAIProcessor:
         return cap
 
     def _process_loop(self, cam_id: str, cam_name: str, rtsp_url: str, stop_event: threading.Event):
-        # Khởi tạo instance MediaPipe Pose riêng cho từng luồng camera để tránh xung đột đa luồng & trộn tracking
         local_pose = None
         if HAS_MEDIAPIPE and self.mp_pose is not None:
             try:
@@ -124,22 +139,37 @@ class CameraAIProcessor:
         last_motion_alert = 0.0
         last_fall_alert = 0.0
         horizontal_start_time = None
+        prev_ts = time.time()
 
         try:
             while not stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret or frame is None:
+                    with self.frames_lock:
+                        self.camera_status[cam_id] = {"online": False, "fps": 0.0, "last_frame_ts": 0.0}
                     cap.release()
                     if stop_event.wait(3.0):
                         break
                     cap = self._open_capture(rtsp_url)
                     continue
 
-                small = cv2.resize(frame, (480, 270))
                 now = time.time()
+                dt = max(0.01, now - prev_ts)
+                prev_ts = now
 
-                # Khi đang theo dõi nghi ngờ té ngã (< 10s), giữ nguyên mô hình nền (learningRate=0)
-                # để nạn nhân nằm bất động không bị MOG2 hòa trộn vào nền
+                # Mã hóa khung hình preview/MJPEG (640x360) phục vụ truyền trực tuyến realtime không cần MediaMTX
+                preview = cv2.resize(frame, (640, 360))
+                ok_jpg, jpg_buf = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+                if ok_jpg:
+                    with self.frames_lock:
+                        self.latest_frames[cam_id] = jpg_buf.tobytes()
+                        self.camera_status[cam_id] = {
+                            "online": True,
+                            "fps": round(1.0 / dt, 1),
+                            "last_frame_ts": now,
+                        }
+
+                small = cv2.resize(frame, (480, 270))
                 lr = 0.0 if (horizontal_start_time is not None and (now - horizontal_start_time) < 10.0) else -1.0
                 fg_mask = bg_subtractor.apply(small, learningRate=lr)
                 motion_pixels = cv2.countNonZero(fg_mask)
@@ -160,7 +190,6 @@ class CameraAIProcessor:
                     })
                     last_motion_alert = now
 
-                # Chạy phân tích dáng người khi có chuyển động HOẶC khi đang theo dõi nghi ngờ té ngã (nạn nhân nằm bất động)
                 if has_motion or (horizontal_start_time is not None):
                     is_horizontal = False
                     if local_pose is not None:
@@ -191,7 +220,6 @@ class CameraAIProcessor:
                             last_fall_alert = now
                             horizontal_start_time = None
                     else:
-                        # Reset ngay khi người đứng dậy hoặc bước ra khỏi khung hình
                         horizontal_start_time = None
 
                 if stop_event.wait(self.thermal_delay):

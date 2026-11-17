@@ -2,92 +2,81 @@
 set -e
 clear
 echo "=========================================================="
-echo "   CAMHUB AI PRO - DANG TAI & CAI DAT TOAN BO HE THONG    "
+echo "   CAMHUB AI PRO - CAI DAT TU DONG TREN TERMUX + UBUNTU   "
 echo "=========================================================="
 
-# Thay thế bằng URL kho GitHub của bạn
 REPO_URL="https://github.com/RaymondRMT/camhub-ai.git"
-APP_DIR="$HOME/camhub_server"
+APP_DIR="$HOME/camhub-ai"
 
-# 1. Cấp quyền truy cập bộ nhớ & giữ CPU hoạt động nền
+# Buoc 1: Chuan bi moi truong Termux & tai ma nguon
 termux-wake-lock || true
 termux-setup-storage || true
-sleep 2
-
-# Cho phép ứng dụng Launcher APK gọi lệnh Termux không bị chặn
 mkdir -p ~/.termux
 grep -q "allow-external-apps" ~/.termux/termux.properties 2>/dev/null || echo "allow-external-apps = true" >> ~/.termux/termux.properties
 termux-reload-settings || true
 
-echo "[1/5] Cap nhat he thong & tai cac goi nen tang..."
+echo "[1/5] Cap nhat Termux & cai dat git, proot-distro..."
 pkg update -y && pkg upgrade -y
-pkg install -y git python python-numpy python-opencv ffmpeg wget tar openssl-tool termux-api libjpeg-turbo libpng cloudflared || \
-pkg install -y git python ffmpeg wget tar openssl-tool termux-api libjpeg-turbo libpng cloudflared
+pkg install -y git proot-distro termux-api wget tar || true
 
-echo "[2/5] Tai ma nguon & du lieu ung dung ve thiet bi..."
 if [ -d "$APP_DIR/.git" ]; then
     cd "$APP_DIR" && git pull origin main
 else
     rm -rf "$APP_DIR"
     git clone "$REPO_URL" "$APP_DIR"
-    cd "$APP_DIR"
 fi
 
-# Liên kết thư mục lưu video ra bộ nhớ chung điện thoại (/sdcard/CamHub_Videos)
+# Lien ket thu muc luu video ra bo nho chung dien thoai
 mkdir -p /sdcard/CamHub_Videos "$APP_DIR/static" "$APP_DIR/snapshots"
 rm -rf "$APP_DIR/recordings"
 ln -s /sdcard/CamHub_Videos "$APP_DIR/recordings"
 
-echo "[3/5] Tai MediaMTX (Engine phat & ghi hinh ARM64)..."
-if [ ! -f "./mediamtx" ]; then
-    wget -q https://github.com/bluenviron/mediamtx/releases/download/v1.9.3/mediamtx_v1.9.3_linux_arm64v8.tar.gz
-    tar -xzf mediamtx_v1.9.3_linux_arm64v8.tar.gz mediamtx
-    rm -f mediamtx_v1.9.3_linux_arm64v8.tar.gz
-    chmod +x mediamtx
+# Buoc 2: Cai dat Ubuntu thu gon ben trong Termux
+echo "[2/5] Kiem tra & cai dat Ubuntu (proot-distro)..."
+if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu" ]; then
+    proot-distro install ubuntu
 fi
 
-echo "[4/5] Cai dat thu vien AI & Web Server..."
-pip install --upgrade pip
-pip install --no-cache-dir fastapi uvicorn aiofiles psutil pyyaml httpx PyJWT python-multipart onvif-zeep
-# Cài đặt thêm mediapipe / opencv-python-headless nếu kiến trúc thiết bị hỗ trợ wheel
-pip install --no-cache-dir opencv-python-headless || true
-pip install --no-cache-dir mediapipe || true
+# Buoc 3 & 4: Cai dat cong cu nen tang & thu vien Python trong Ubuntu (khong hoi tzdata)
+echo "[3/5] & [4/5] Cai dat Python, FFmpeg va thu vien AI trong Ubuntu..."
+proot-distro login ubuntu -- bash -c '
+set -e
+export DEBIAN_FRONTEND=noninteractive
+ln -fs /usr/share/zoneinfo/Asia/Ho_Chi_Minh /etc/localtime
+apt-get update && apt-get install -y python3 python3-pip python3-venv ffmpeg libgl1 libglib2.0-0 tzdata
+dpkg-reconfigure -f noninteractive tzdata
 
-cat << 'EOF' > "$APP_DIR/mediamtx.yml"
-webrtcAddress: :8889
-hlsAddress: :8888
-api: yes
-apiAddress: 127.0.0.1:9997
-paths:
-  all_others:
-    record: yes
-    recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S
-    recordFormat: fmp4
-    recordPartDuration: 1s
-    recordSegmentDuration: 5m
-EOF
+if [ ! -d /root/venv ]; then
+    python3 -m venv /root/venv
+fi
 
-echo "[5/5] Tao nut khoi dong nhanh & tu dong chay khi bat may..."
-mkdir -p ~/.shortcuts ~/.termux/boot
+/root/venv/bin/pip install --upgrade pip
+/root/venv/bin/pip install --prefer-binary \
+  fastapi uvicorn aiofiles psutil onvif-zeep \
+  opencv-python-headless numpy httpx websockets \
+  python-multipart PyJWT passlib bcrypt python-dotenv
 
-cat << 'EOF' > "$APP_DIR/start_server.sh"
+/root/venv/bin/python -c "import cv2, fastapi, onvif, httpx, jwt; print(\"Cai dat thanh cong! OpenCV:\", cv2.__version__)"
+'
+
+# Buoc 5: Tao lenh khoi dong nhanh 1 cham (camhub)
+echo "[5/5] Tao lenh tat camhub & tu dong khoi chay..."
+SERVER_DIR=$(dirname "$(find "$HOME/camhub-ai" -name "main.py" | head -n 1)")
+
+cat << EOF > "$HOME/start_camhub.sh"
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock || true
-cd ~/camhub_server
-pkill -f mediamtx || true
-pkill -f "uvicorn main:app" || true
-nohup ./mediamtx mediamtx.yml > mediamtx.log 2>&1 &
-sleep 2
-nohup uvicorn main:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &
-sleep 2
-termux-open-url "http://localhost:8000" || true
+proot-distro login ubuntu -- bash -c "cd $SERVER_DIR && /root/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
 EOF
+chmod +x "$HOME/start_camhub.sh"
 
-chmod +x "$APP_DIR/start_server.sh"
-cp "$APP_DIR/start_server.sh" ~/.shortcuts/"CamHub AI Pro.sh"
-cp "$APP_DIR/start_server.sh" ~/.termux/boot/start_camhub.sh
+grep -q 'alias camhub=' ~/.bashrc 2>/dev/null || echo 'alias camhub="bash ~/start_camhub.sh"' >> ~/.bashrc
+
+mkdir -p ~/.shortcuts ~/.termux/boot
+cp "$HOME/start_camhub.sh" ~/.shortcuts/"CamHub AI Pro.sh"
+cp "$HOME/start_camhub.sh" ~/.termux/boot/start_camhub.sh
 
 echo "=========================================================="
-echo " HOAN TAT! DANG MO GIAO DIEN QUAN LY CAMERA...            "
+echo " HOAN TAT! Go lenh 'camhub' de bat dau chay may chu.      "
 echo "=========================================================="
-bash "$APP_DIR/start_server.sh"
+bash "$HOME/start_camhub.sh"
