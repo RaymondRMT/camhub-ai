@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#E0F2FE"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="28dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="CamHub AI Pro"
+        android:textColor="#0F172A"
+        android:textSize="28sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:gravity="center"
+        android:text="Biến điện thoại thành Trạm Chủ Camera Thông Minh (AI Phát hiện té ngã, Lưu trữ 30 ngày &amp; Xem từ xa miễn phí)"
+        android:textColor="#475569"
+        android:textSize="14sp" />
+
+    <Button
+        android:id="@+id/btnInstall"
+        android:layout_width="match_parent"
+        android:layout_height="54dp"
+        android:layout_marginTop="28dp"
+        android:backgroundTint="#0284C7"
+        android:text="CÀI ĐẶT &amp; KHỞI CHẠY NGAY"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold" />
+
+    <Button
+        android:id="@+id/btnOpenWeb"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:layout_marginTop="12dp"
+        android:backgroundTint="#FFFFFF"
+        android:text="MỞ GIAO DIỆN QUẢN LÝ CAMERA"
+        android:textColor="#0284C7"
+        android:textStyle="bold" />
+</LinearLayout>

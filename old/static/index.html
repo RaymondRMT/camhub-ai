@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>CamHub AI Pro — Giám Sát Bảo Mật</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    :root {
+      --bg-gradient: radial-gradient(circle at 15% 15%, #e0f2fe 0%, #f1f5f9 45%, #e2e8f0 100%);
+      --glass-bg: rgba(255, 255, 255, 0.65);
+      --glass-strong: rgba(255, 255, 255, 0.85);
+      --glass-border: rgba(255, 255, 255, 0.92);
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --accent: #0284c7;
+      --accent-glow: rgba(2, 132, 199, 0.25);
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --success: #10b981;
+      --shadow-glass: 0 12px 32px -4px rgba(15, 23, 42, 0.08), inset 0 1px 1px rgba(255, 255, 255, 0.95);
+      --mirror-btn-bg: linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(241,245,249,0.68) 50%, rgba(255,255,255,0.88) 100%);
+      --mirror-btn-shadow: 0 6px 16px rgba(15, 23, 42, 0.1), inset 0 1.5px 1px rgba(255, 255, 255, 1);
+    }
+
+    [data-theme="dark"] {
+      --bg-gradient: radial-gradient(circle at 15% 15%, #0f172a 0%, #090d16 55%, #020617 100%);
+      --glass-bg: rgba(17, 25, 40, 0.65);
+      --glass-strong: rgba(23, 33, 54, 0.85);
+      --glass-border: rgba(255, 255, 255, 0.14);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.25);
+      --shadow-glass: 0 16px 40px -4px rgba(0, 0, 0, 0.55), inset 0 1px 1px rgba(255, 255, 255, 0.15);
+      --mirror-btn-bg: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0.14) 100%);
+      --mirror-btn-shadow: 0 8px 20px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; }
+    body { background: var(--bg-gradient); color: var(--text-primary); min-height: 100vh; overflow-x: hidden; transition: background 0.3s ease, color 0.3s ease; }
+
+    .glass {
+      background: var(--glass-bg);
+      backdrop-filter: blur(22px) saturate(180%);
+      -webkit-backdrop-filter: blur(22px) saturate(180%);
+      border: 1px solid var(--glass-border);
+      box-shadow: var(--shadow-glass);
+      border-radius: 22px;
+    }
+
+    .mirror-btn {
+      position: relative;
+      background: var(--mirror-btn-bg);
+      backdrop-filter: blur(14px);
+      border: 1px solid var(--glass-border);
+      box-shadow: var(--mirror-btn-shadow);
+      color: var(--text-primary);
+      padding: 10px 15px;
+      border-radius: 14px;
+      font-weight: 600;
+      font-size: 0.86rem;
+      cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      transition: transform 0.15s ease;
+      overflow: hidden;
+      user-select: none;
+    }
+    .mirror-btn::after {
+      content: ""; position: absolute; top: -50%; left: -60%; width: 40%; height: 200%;
+      background: linear-gradient(to right, transparent, rgba(255,255,255,0.45), transparent);
+      transform: rotate(25deg); transition: left 0.45s ease; pointer-events: none;
+    }
+    .mirror-btn:hover::after { left: 130%; }
+    .mirror-btn:active { transform: scale(0.95); }
+    .mirror-btn.primary, .mirror-btn.active {
+      background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+      color: #fff; border: 1px solid rgba(255,255,255,0.45);
+      box-shadow: 0 8px 20px var(--accent-glow), inset 0 1.5px 1px rgba(255,255,255,0.6);
+    }
+    .mirror-btn.danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: rgba(239, 68, 68, 0.35); }
+
+    .app-shell { display: flex; min-height: 100vh; padding: 16px; gap: 16px; }
+    .sidebar {
+      width: 250px; flex-shrink: 0; padding: 20px 14px;
+      display: flex; flex-direction: column; justify-content: space-between;
+      position: sticky; top: 16px; height: calc(100vh - 32px); z-index: 40;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; padding: 4px 10px 20px; font-weight: 700; font-size: 1.15rem; }
+    .brand-icon { width: 36px; height: 36px; border-radius: 11px; background: linear-gradient(135deg, #38bdf8, #0284c7); display: grid; place-items: center; color: #fff; }
+    .nav-list { display: flex; flex-direction: column; gap: 8px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 15px;
+      color: var(--text-secondary); font-weight: 600; font-size: 0.9rem; cursor: pointer;
+      border: 1px solid transparent; transition: all 0.2s ease;
+    }
+    .nav-item.active, .nav-item:hover { background: var(--glass-strong); color: var(--accent); border-color: var(--glass-border); }
+
+    .main-content { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+    .navbar { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .pill {
+      padding: 6px 12px; border-radius: 999px; font-size: 0.78rem; font-weight: 600;
+      background: var(--glass-strong); border: 1px solid var(--glass-border);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px var(--success); }
+
+    .view-section { display: none; flex-direction: column; gap: 16px; }
+    .view-section.active { display: flex; }
+
+    /* Live Grid Layouts */
+    .live-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
+    .cam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .grid-1x1 { grid-template-columns: 1fr !important; }
+    .grid-2x2 { grid-template-columns: repeat(2, 1fr) !important; }
+    .grid-3x3 { grid-template-columns: repeat(3, 1fr) !important; }
+
+    .cam-card { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .video-box { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #050811; border-radius: 16px; overflow: hidden; }
+    .video-box video { width: 100%; height: 100%; object-fit: cover; transition: transform 0.2s ease; }
+    .cam-badge { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.55); backdrop-filter: blur(8px); color: #fff; padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+
+    /* PTZ Pad & Two-Way Talk */
+    .ptz-pad {
+      position: absolute; bottom: 12px; right: 12px; z-index: 15;
+      display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px);
+      gap: 3px; background: rgba(15, 23, 42, 0.48); backdrop-filter: blur(10px);
+      padding: 5px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.25);
+      opacity: 0.85; transition: opacity 0.2s ease;
+    }
+    .ptz-pad:hover { opacity: 1; }
+    .ptz-btn {
+      background: rgba(255,255,255,0.18); border: none; color: #fff;
+      border-radius: 50%; cursor: pointer; font-size: 11px; font-weight: 700; display: grid; place-items: center;
+    }
+    .ptz-btn:active { background: var(--accent); transform: scale(0.9); }
+
+    .ptt-btn.recording { background: var(--danger) !important; color: #fff !important; animation: pulseTalk 1s infinite; }
+    @keyframes pulseTalk { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); } 70% { box-shadow: 0 0 0 10px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
+
+    .playback-layout { display: grid; grid-template-columns: 1fr 310px; gap: 16px; }
+    .input-glass {
+      width: 100%; padding: 11px 14px; border-radius: 13px;
+      border: 1px solid var(--glass-border); background: var(--glass-strong);
+      color: var(--text-primary); font-size: 0.9rem; outline: none;
+    }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+
+    .qr-share-box {
+      display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+      padding: 16px; border-radius: 18px; background: var(--glass-strong); border: 1px solid var(--glass-border);
+    }
+    #qrcodeBox { padding: 10px; background: #ffffff; border-radius: 14px; box-shadow: 0 4px 14px rgba(0,0,0,0.08); flex-shrink: 0; }
+
+    .progress-track { width: 100%; height: 11px; background: rgba(148, 163, 184, 0.22); border-radius: 999px; overflow: hidden; margin: 10px 0; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #0284c7); border-radius: 999px; }
+
+    .alert-banner {
+      position: fixed; top: 18px; right: 18px; z-index: 999;
+      max-width: 360px; padding: 14px 18px; border-left: 5px solid var(--danger);
+      display: none; animation: slideIn 0.3s ease;
+    }
+    @keyframes slideIn { from { transform: translateX(110%); } to { transform: translateX(0); } }
+
+    .auth-modal {
+      position: fixed; inset: 0; z-index: 1000;
+      background: rgba(15, 23, 42, 0.5); backdrop-filter: blur(20px);
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+    }
+
+    .admin-only { display: none; }
+    body.is-admin .admin-only { display: flex; }
+    body.is-admin .nav-item.admin-only { display: flex; }
+
+    @media (max-width: 860px) {
+      .app-shell { flex-direction: column; padding: 10px 10px 84px; }
+      .sidebar {
+        position: fixed; bottom: 10px; left: 10px; right: 10px; top: auto;
+        width: auto; height: auto; flex-direction: row; padding: 8px; border-radius: 20px;
+      }
+      .brand, .sidebar-footer { display: none; }
+      .nav-list { flex-direction: row; width: 100%; justify-content: space-around; }
+      .nav-item { flex-direction: column; gap: 4px; padding: 8px 6px; font-size: 0.7rem; text-align: center; }
+      .playback-layout, .grid-2x2, .grid-3x3 { grid-template-columns: 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Thông báo khẩn cấp (Té ngã / Chuyển động) -->
+  <div id="alertToast" class="glass alert-banner">
+    <strong id="alertTitle" style="color: var(--danger); display:block; margin-bottom:4px;">CẢNH BÁO AI</strong>
+    <span id="alertBody" style="font-size: 0.88rem;">Phát hiện sự kiện bất thường</span>
+  </div>
+
+  <!-- Màn hình Đăng nhập / Khởi tạo Quản trị viên -->
+  <div id="authModal" class="auth-modal">
+    <div class="glass" style="width:100%; max-width:400px; padding:26px; display:flex; flex-direction:column; gap:14px;">
+      <div style="text-align:center;">
+        <h2 id="authHeading" style="font-size:1.35rem;">CamHub AI Pro</h2>
+        <p id="authSub" style="color:var(--text-secondary); font-size:0.85rem; margin-top:4px;">Khởi tạo tài khoản Quản trị viên lần đầu</p>
+      </div>
+      <input id="authDisplayName" class="input-glass" type="text" placeholder="Tên hiển thị (VD: Ba / Quản trị viên)" />
+      <input id="authUser" class="input-glass" type="text" placeholder="Tên đăng nhập" autocomplete="username" />
+      <input id="authPass" class="input-glass" type="password" placeholder="Mật khẩu bảo mật" autocomplete="current-password" />
+      <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; color:var(--text-secondary); cursor:pointer;">
+        <input id="rememberMeCheck" type="checkbox" checked style="width:16px; height:16px; accent-color:var(--accent);" />
+        <span>Lưu tài khoản & mật khẩu để tự động đăng nhập</span>
+      </label>
+      <button class="mirror-btn primary" onclick="submitAuth()">Đăng nhập hệ thống</button>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <!-- Sidebar / Mobile Bottom Bar -->
+    <aside class="glass sidebar">
+      <div>
+        <div class="brand">
+          <div class="brand-icon">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="3"/></svg>
+          </div>
+          <span>CamHub Pro</span>
+        </div>
+        <nav class="nav-list">
+          <div class="nav-item active" onclick="switchView('live', this)">
+            <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            <span>Trực tiếp</span>
+          </div>
+          <div class="nav-item" onclick="switchView('playback', this)">
+            <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span>Xem lại</span>
+          </div>
+          <div class="nav-item" onclick="switchView('alerts', this)">
+            <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span>Cảnh báo</span>
+          </div>
+          <div class="nav-item admin-only" onclick="switchView('family', this)">
+            <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span>Gia đình & QR</span>
+          </div>
+          <div class="nav-item admin-only" onclick="switchView('setup', this)">
+            <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span>Cài đặt</span>
+          </div>
+        </nav>
+      </div>
+      <div class="sidebar-footer" style="font-size:0.78rem; color:var(--text-secondary); padding:8px;">
+        <div id="userRoleLabel" style="font-weight:700; color:var(--accent); margin-bottom:6px;">--</div>
+        <button class="mirror-btn" style="width:100%; padding:7px;" onclick="logout()">Đăng xuất</button>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <main class="main-content">
+      <header class="glass navbar">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <span class="pill"><span class="dot"></span> Server Online</span>
+          <span class="pill" id="navStoragePill">Trống: -- GB</span>
+          <span class="pill" id="deviceThermalPill">Pin: --% • --°C</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="mirror-btn" onclick="toggleTheme()" title="Đổi giao diện Sáng / Tối">
+            <svg id="themeIcon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+          </button>
+          <button class="mirror-btn" onclick="logout()" style="padding:8px 12px;">Thoát</button>
+        </div>
+      </header>
+
+      <!-- VIEW 1: LIVE CAMERAS (GRID 1x1, 2x2, 3x3 + PTZ + TALK + FULLSCREEN) -->
+      <section id="view-live" class="view-section active">
+        <div class="glass live-toolbar">
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span style="font-size:0.84rem; font-weight:700; color:var(--text-secondary);">Hiển thị lưới:</span>
+            <button class="mirror-btn grid-opt" onclick="setGridLayout('grid-1x1', this)">1x1</button>
+            <button class="mirror-btn grid-opt active" onclick="setGridLayout('grid-2x2', this)">2x2 (4 Cam)</button>
+            <button class="mirror-btn grid-opt" onclick="setGridLayout('grid-3x3', this)">3x3 (9 Cam)</button>
+          </div>
+          <button class="mirror-btn primary" onclick="toggleGridFullscreen()">Toàn màn hình</button>
+        </div>
+        <div class="cam-grid grid-2x2" id="liveCamGrid"></div>
+      </section>
+
+      <!-- VIEW 2: PLAYBACK TUA NHANH 16X -->
+      <section id="view-playback" class="view-section">
+        <div class="playback-layout">
+          <div class="glass" style="padding:16px; display:flex; flex-direction:column; gap:12px;">
+            <div class="video-box">
+              <video id="playbackVideo" controls playsinline></video>
+              <span class="cam-badge" id="playbackSpeedBadge">Tốc độ: 1x</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button class="mirror-btn" onclick="skipSeconds(-10)">-10s</button>
+                <button class="mirror-btn" onclick="skipSeconds(10)">+10s</button>
+                <button class="mirror-btn speed-btn" onclick="setSpeed(0.5, this)">0.5x</button>
+                <button class="mirror-btn speed-btn active" onclick="setSpeed(1, this)">1x</button>
+                <button class="mirror-btn speed-btn" onclick="setSpeed(2, this)">2x</button>
+                <button class="mirror-btn speed-btn" onclick="setSpeed(4, this)">4x</button>
+                <button class="mirror-btn speed-btn" onclick="setSpeed(8, this)">8x</button>
+                <button class="mirror-btn speed-btn" onclick="setSpeed(16, this)">16x</button>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button class="mirror-btn" onclick="toggleZoomVideo()">Zoom 2x</button>
+                <button class="mirror-btn primary" onclick="captureSnapshot()">Chụp ảnh</button>
+              </div>
+            </div>
+          </div>
+          <div class="glass" style="padding:16px; max-height:520px; overflow-y:auto;">
+            <h3 style="font-size:1rem; margin-bottom:10px;">Bản ghi đã lưu</h3>
+            <div id="recordingList" style="display:flex; flex-direction:column; gap:8px;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 3: AI ALERTS -->
+      <section id="view-alerts" class="view-section">
+        <div class="glass" style="padding:18px;">
+          <h3 style="margin-bottom:12px;">Cảnh báo Chuyển động & Té ngã</h3>
+          <div id="alertsContainer" class="cam-grid"></div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: GIA ĐÌNH & CHIA SẺ QR CODE (ADMIN) -->
+      <section id="view-family" class="view-section">
+        <div class="glass" style="padding:20px; display:flex; flex-direction:column; gap:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div>
+              <h3>Đường hầm Truy cập Từ xa (Miễn phí & Bảo mật)</h3>
+              <p style="font-size:0.84rem; color:var(--text-secondary);">Chia sẻ đường link hoặc mã QR bên dưới cho người thân để xem camera qua 4G/5G</p>
+            </div>
+            <button class="mirror-btn" onclick="restartTunnel()">Làm mới Tunnel</button>
+          </div>
+
+          <div class="qr-share-box">
+            <div id="qrcodeBox"></div>
+            <div style="flex:1; min-width:220px; display:flex; flex-direction:column; gap:10px;">
+              <label style="font-size:0.82rem; font-weight:700; color:var(--text-secondary);">LINK TRUY CẬP TỪ XA:</label>
+              <input id="remoteLinkInput" class="input-glass" readonly value="Đang khởi tạo đường hầm..." />
+              <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <button class="mirror-btn primary" onclick="copyRemoteLink()">Sao chép Link</button>
+                <button class="mirror-btn" onclick="shareRemoteLink()">Chia sẻ cho Gia đình</button>
+              </div>
+            </div>
+          </div>
+
+          <details style="margin-top:4px;">
+            <summary style="cursor:pointer; font-size:0.86rem; font-weight:600; color:var(--accent);">Nâng cao: Gắn tên miền cố định vĩnh viễn (Cloudflare Named Tunnel)</summary>
+            <div class="form-grid" style="margin-top:12px;">
+              <input id="cfDomainInput" class="input-glass" placeholder="Tên miền cố định (VD: https://cam.nhacuatui.com)" />
+              <input id="cfTokenInput" type="password" class="input-glass" placeholder="Dán Cloudflare Tunnel Token tại đây" />
+              <button class="mirror-btn primary" onclick="saveTunnelToken()">Kích hoạt Link cố định</button>
+            </div>
+          </details>
+        </div>
+
+        <div class="glass" style="padding:20px; display:flex; flex-direction:column; gap:14px;">
+          <h3>Tạo tài khoản cho Thành viên Gia đình</h3>
+          <div class="form-grid">
+            <input id="famDisplayName" class="input-glass" placeholder="Tên gọi (VD: Mẹ, Vợ, Em trai)" />
+            <input id="famUsername" class="input-glass" placeholder="Tên đăng nhập" />
+            <input id="famPassword" type="password" class="input-glass" placeholder="Mật khẩu cấp cho thành viên" />
+            <button class="mirror-btn primary" onclick="addFamilyMember()">+ Cấp tài khoản</button>
+          </div>
+          <div id="familyList" style="display:flex; flex-direction:column; gap:8px; margin-top:8px;"></div>
+        </div>
+      </section>
+
+      <!-- VIEW 5: CÀI ĐẶT WIFI, CAMERA, DUNG LƯỢNG, TELEGRAM & BẢO MẬT (ADMIN) -->
+      <section id="view-setup" class="view-section">
+        <div class="glass" style="padding:18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <h3>Bộ nhớ lưu trữ xoay vòng</h3>
+            <span id="storageDetailText" style="font-size:0.85rem; color:var(--text-secondary);">--</span>
+          </div>
+          <div class="progress-track"><div id="storageBar" class="progress-fill" style="width: 20%;"></div></div>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
+            <label style="font-size:0.86rem; font-weight:600;">Số ngày lưu tối đa:</label>
+            <input id="retentionInput" type="number" value="30" min="1" max="365" class="input-glass" style="width:90px;" />
+            <button class="mirror-btn primary" onclick="saveRetention()">Lưu</button>
+          </div>
+        </div>
+
+        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3>1. Kết nối Wi-Fi cho Trạm Chủ</h3>
+            <button class="mirror-btn" onclick="scanWifi()">Quét Wi-Fi xung quanh</button>
+          </div>
+          <div class="form-grid">
+            <select id="wifiSelect" class="input-glass"><option value="">-- Chọn mạng Wi-Fi --</option></select>
+            <input id="wifiPass" type="password" class="input-glass" placeholder="Nhập mật khẩu Wi-Fi" />
+            <button class="mirror-btn primary" onclick="connectWifi()">Kết nối Wi-Fi</button>
+          </div>
+        </div>
+
+        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3>2. Quét & Thêm Camera trong mạng Wi-Fi</h3>
+            <button class="mirror-btn" onclick="discoverCameras()">Quét Camera LAN</button>
+          </div>
+          <div id="discoveredList" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+          <div class="form-grid">
+            <input id="camName" class="input-glass" placeholder="Tên vị trí (VD: Phòng khách)" />
+            <input id="camIp" class="input-glass" placeholder="IP Camera (VD: 192.168.1.64)" />
+            <select id="camBrand" class="input-glass">
+              <option value="hikvision">Hikvision</option>
+              <option value="dahua">Dahua</option>
+              <option value="imou">Imou</option>
+              <option value="ezviz">Ezviz</option>
+              <option value="kbvision">KBVision</option>
+              <option value="yoosee">Yoosee</option>
+              <option value="custom">ONVIF / Khác</option>
+            </select>
+            <input id="camUser" class="input-glass" value="admin" placeholder="Tài khoản Camera" />
+            <input id="camPass" type="password" class="input-glass" placeholder="Mật khẩu / Verification Code" />
+            <button class="mirror-btn primary" onclick="addCamera()">Tự động cấu hình & Thêm</button>
+          </div>
+        </div>
+
+        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div>
+              <h3>3. Thông báo Cảnh báo qua Telegram Bot</h3>
+              <p style="font-size:0.83rem; color:var(--text-secondary);">Tự động gửi hình ảnh khoảnh khắc té ngã & chuyển động về điện thoại</p>
+            </div>
+            <button class="mirror-btn" onclick="testTelegram()">Gửi tin thử nghiệm</button>
+          </div>
+          <div class="form-grid">
+            <input id="tgBotToken" type="password" class="input-glass" placeholder="Bot Token (từ @BotFather)" />
+            <input id="tgChatId" class="input-glass" placeholder="Chat ID hoặc Group ID gia đình" />
+          </div>
+          <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:0.86rem;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+              <input id="tgFallCheck" type="checkbox" checked style="accent-color:var(--accent);" /> Cảnh báo Té ngã (Khẩn cấp)
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+              <input id="tgMotionCheck" type="checkbox" style="accent-color:var(--accent);" /> Cảnh báo Chuyển động
+            </label>
+          </div>
+          <div><button class="mirror-btn primary" onclick="saveTelegramConfig()">Lưu cấu hình Telegram</button></div>
+        </div>
+
+        <div class="glass" style="padding:18px; display:flex; flex-direction:column; gap:14px;">
+          <h3>4. Bảo mật Tài khoản & Nhật ký Đăng nhập</h3>
+          <div class="form-grid">
+            <input id="oldPassInput" type="password" class="input-glass" placeholder="Mật khẩu hiện tại" />
+            <input id="newPassInput" type="password" class="input-glass" placeholder="Mật khẩu mới" />
+            <button class="mirror-btn primary" onclick="changePassword()">Đổi mật khẩu</button>
+          </div>
+
+          <div style="margin-top:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <strong style="font-size:0.88rem;">Lịch sử truy cập gần đây (IP & Thiết bị)</strong>
+              <button class="mirror-btn" style="padding:6px 12px; font-size:0.78rem;" onclick="loadLoginLogs()">Làm mới</button>
+            </div>
+            <div id="loginLogsList" style="display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto;"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    let isSetupAdmin = false;
+    let isZoomed = false;
+    let lastAlertCount = 0;
+    let mediaRecorder = null;
+    let audioChunks = [];
+
+    function getAuthHeaders() {
+      return {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + (localStorage.getItem("camhub_jwt") || sessionStorage.getItem("camhub_jwt") || "")
+      };
+    }
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const next = html.getAttribute("data-theme") === "light" ? "dark" : "light";
+      html.setAttribute("data-theme", next);
+      localStorage.setItem("camhub_theme", next);
+      document.getElementById("themeIcon").innerHTML = next === "dark"
+        ? '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'
+        : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+    }
+    if (localStorage.getItem("camhub_theme") === "dark") toggleTheme();
+
+    function switchView(name, el) {
+      document.querySelectorAll(".view-section").forEach(v => v.classList.remove("active"));
+      document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+      document.getElementById("view-" + name).classList.add("active");
+      el.classList.add("active");
+      if (name === "playback") loadRecordings();
+      if (name === "alerts") loadAlerts();
+      if (name === "family") { loadTunnelInfo(); loadFamilyMembers(); }
+      if (name === "setup") { loadSecurityAndTelegram(); }
+    }
+
+    function loadSavedCredentials() {
+      const savedUser = localStorage.getItem("camhub_saved_user");
+      const savedPass = localStorage.getItem("camhub_saved_pass");
+      if (savedUser) document.getElementById("authUser").value = savedUser;
+      if (savedPass) document.getElementById("authPass").value = atob(savedPass);
+    }
+
+    async function checkAuth() {
+      loadSavedCredentials();
+      const status = await fetch("/api/auth/status").then(r => r.json());
+      isSetupAdmin = !status.has_admin;
+      if (!isSetupAdmin) {
+        document.getElementById("authHeading").innerText = "Đăng nhập CamHub Pro";
+        document.getElementById("authSub").innerText = "Đăng nhập bằng tài khoản Quản trị hoặc Thành viên gia đình";
+        document.getElementById("authDisplayName").style.display = "none";
+      }
+
+      const token = localStorage.getItem("camhub_jwt") || sessionStorage.getItem("camhub_jwt");
+      if (token) {
+        const test = await fetch("/api/cameras", { headers: getAuthHeaders() });
+        if (test.ok) {
+          applyRoleUI(localStorage.getItem("camhub_role") || "member", localStorage.getItem("camhub_name") || "Thành viên");
+          document.getElementById("authModal").style.display = "none";
+          initDashboard();
+        }
+      }
+    }
+
+    async function submitAuth() {
+      const username = document.getElementById("authUser").value.trim();
+      const password = document.getElementById("authPass").value.trim();
+      const display_name = document.getElementById("authDisplayName").value.trim() || "Quản trị viên";
+      const remember = document.getElementById("rememberMeCheck").checked;
+
+      if (!username || !password) return alert("Vui lòng nhập đầy đủ tài khoản và mật khẩu");
+
+      const url = isSetupAdmin ? "/api/auth/setup-admin" : "/api/auth/login";
+      const body = isSetupAdmin ? { username, display_name, password } : { username, password, remember_me: remember };
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) return alert("Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin!");
+
+      const data = await res.json();
+      if (remember) {
+        localStorage.setItem("camhub_jwt", data.token);
+        localStorage.setItem("camhub_saved_user", username);
+        localStorage.setItem("camhub_saved_pass", btoa(password));
+      } else {
+        sessionStorage.setItem("camhub_jwt", data.token);
+        localStorage.removeItem("camhub_saved_user");
+        localStorage.removeItem("camhub_saved_pass");
+      }
+      localStorage.setItem("camhub_role", data.role);
+      localStorage.setItem("camhub_name", data.display_name);
+
+      applyRoleUI(data.role, data.display_name);
+      document.getElementById("authModal").style.display = "none";
+      initDashboard();
+    }
+
+    function applyRoleUI(role, name) {
+      if (role === "admin") document.body.classList.add("is-admin");
+      else document.body.classList.remove("is-admin");
+      document.getElementById("userRoleLabel").innerText = `${name} (${role === 'admin' ? 'Quản trị viên' : 'Gia đình'})`;
+    }
+
+    function logout() {
+      localStorage.removeItem("camhub_jwt");
+      sessionStorage.removeItem("camhub_jwt");
+      location.reload();
+    }
+
+    // --- GRID, FULLSCREEN, PTZ & TWO-WAY AUDIO ---
+    function setGridLayout(cls, btn) {
+      const grid = document.getElementById("liveCamGrid");
+      grid.classList.remove("grid-1x1", "grid-2x2", "grid-3x3");
+      grid.classList.add(cls);
+      document.querySelectorAll(".grid-opt").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+    }
+
+    function toggleGridFullscreen() {
+      const grid = document.getElementById("liveCamGrid");
+      if (!document.fullscreenElement) grid.requestFullscreen().catch(() => {});
+      else document.exitFullscreen();
+    }
+
+    function toggleSingleCamFullscreen(camId) {
+      const box = document.getElementById("box_" + camId);
+      if (!document.fullscreenElement) box.requestFullscreen().catch(() => {});
+      else document.exitFullscreen();
+    }
+
+    async function sendPTZ(camId, direction) {
+      await fetch(`/api/cameras/${camId}/ptz`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ direction, speed: 0.6 })
+      });
+    }
+
+    async function startTalking(camId, btn) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+        mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(audioChunks, { type: "audio/webm" });
+          const form = new FormData();
+          form.append("audio", blob, "voice.webm");
+          await fetch(`/api/cameras/${camId}/talk`, {
+            method: "POST",
+            headers: { "Authorization": getAuthHeaders().Authorization },
+            body: form
+          });
+          stream.getTracks().forEach(t => t.stop());
+        };
+        mediaRecorder.start();
+        btn.classList.add("recording");
+        btn.innerText = "Đang nói...";
+      } catch (e) {
+        alert("Vui lòng cấp quyền Micro trên trình duyệt để đàm thoại 2 chiều!");
+      }
+    }
+
+    function stopTalking(btn) {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+      btn.classList.remove("recording");
+      btn.innerText = "Giữ để nói";
+    }
+
+    async function loadDeviceHealth() {
+      const h = await fetch("/api/system/health", { headers: getAuthHeaders() }).then(r => r.json());
+      const pill = document.getElementById("deviceThermalPill");
+      if (pill) {
+        pill.innerText = `Pin: ${h.battery_pct}% • ${h.temperature}°C`;
+        pill.style.color = h.temperature > 42 ? "var(--danger)" : "inherit";
+      }
+    }
+
+    // --- TUNNEL & QR CODE ---
+    async function loadTunnelInfo() {
+      const res = await fetch("/api/tunnel", { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      const link = data.url || "Đang tạo đường hầm Cloudflare...";
+      document.getElementById("remoteLinkInput").value = link;
+      document.getElementById("cfDomainInput").value = data.custom_domain || "";
+
+      const qrBox = document.getElementById("qrcodeBox");
+      qrBox.innerHTML = "";
+      if (link.startsWith("http")) {
+        new QRCode(qrBox, { text: link, width: 140, height: 140, colorDark: "#0f172a", colorLight: "#ffffff" });
+      }
+    }
+
+    function copyRemoteLink() {
+      const input = document.getElementById("remoteLinkInput");
+      input.select();
+      navigator.clipboard.writeText(input.value);
+      alert("Đã sao chép đường link truy cập từ xa!");
+    }
+
+    function shareRemoteLink() {
+      const url = document.getElementById("remoteLinkInput").value;
+      if (navigator.share && url.startsWith("http")) {
+        navigator.share({ title: "CamHub AI Gia Đình", text: "Link xem Camera trực tuyến của gia đình:", url });
+      } else {
+        copyRemoteLink();
+      }
+    }
+
+    async function saveTunnelToken() {
+      const cf_token = document.getElementById("cfTokenInput").value;
+      const custom_domain = document.getElementById("cfDomainInput").value;
+      await fetch("/api/tunnel/config", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ cf_token, custom_domain })
+      });
+      setTimeout(loadTunnelInfo, 2500);
+      alert("Đã cập nhật cấu hình đường hầm cố định!");
+    }
+
+    async function restartTunnel() {
+      await fetch("/api/tunnel/restart", { method: "POST", headers: getAuthHeaders() });
+      document.getElementById("remoteLinkInput").value = "Đang khởi tạo lại đường hầm...";
+      setTimeout(loadTunnelInfo, 3500);
+    }
+
+    // --- FAMILY ACCOUNTS ---
+    async function loadFamilyMembers() {
+      const res = await fetch("/api/family", { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      document.getElementById("familyList").innerHTML = data.members.map(m => `
+        <div class="glass" style="padding:12px 16px; display:flex; justify-content:space-between; align-items:center; border-radius:14px;">
+          <div>
+            <strong>${m.display_name}</strong> <span style="font-size:0.82rem; color:var(--text-secondary);">(@${m.username})</span>
+            <div style="font-size:0.75rem; color:var(--accent);">${m.role === 'admin' ? 'Quản trị viên' : 'Thành viên xem trực tiếp'}</div>
+          </div>
+          ${m.role === 'member' ? `<button class="mirror-btn danger" onclick="deleteMember(${m.id})">Thu hồi</button>` : ''}
+        </div>
+      `).join("");
+    }
+
+    async function addFamilyMember() {
+      const display_name = document.getElementById("famDisplayName").value.trim();
+      const username = document.getElementById("famUsername").value.trim();
+      const password = document.getElementById("famPassword").value.trim();
+      if (!display_name || !username || !password) return alert("Vui lòng nhập đầy đủ thông tin thành viên");
+      const res = await fetch("/api/family", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ display_name, username, password })
+      });
+      if (!res.ok) return alert("Tên đăng nhập đã tồn tại!");
+      document.getElementById("famDisplayName").value = "";
+      document.getElementById("famUsername").value = "";
+      document.getElementById("famPassword").value = "";
+      loadFamilyMembers();
+    }
+
+    async function deleteMember(id) {
+      if (!confirm("Thu hồi quyền truy cập của thành viên này?")) return;
+      await fetch(`/api/family/${id}`, { method: "DELETE", headers: getAuthHeaders() });
+      loadFamilyMembers();
+    }
+
+    // --- WIFI & CAMERAS ---
+    async function scanWifi() {
+      const sel = document.getElementById("wifiSelect");
+      sel.innerHTML = "<option>Đang quét mạng Wi-Fi...</option>";
+      const data = await fetch("/api/wifi/scan", { headers: getAuthHeaders() }).then(r => r.json());
+      sel.innerHTML = data.networks.map(n => `<option value="${n.ssid}">${n.ssid} (${n.rssi} dBm)</option>`).join("");
+    }
+
+    async function connectWifi() {
+      const ssid = document.getElementById("wifiSelect").value;
+      const password = document.getElementById("wifiPass").value;
+      const res = await fetch("/api/wifi/connect", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ssid, password })
+      }).then(r => r.json());
+      alert(res.message);
+    }
+
+    async function loadCameras() {
+      const data = await fetch("/api/cameras", { headers: getAuthHeaders() }).then(r => r.json());
+      const grid = document.getElementById("liveCamGrid");
+      const isAdmin = localStorage.getItem("camhub_role") === "admin";
+      if (!data.cameras.length) {
+        grid.innerHTML = `<div class="glass" style="padding:24px; text-align:center;">Chưa có camera nào được thêm vào hệ thống.</div>`;
+        return;
+      }
+      grid.innerHTML = data.cameras.map(c => `
+        <div class="glass cam-card">
+          <div class="video-box" id="box_${c.id}">
+            <video id="vid_${c.id}" autoplay muted playsinline></video>
+            <span class="cam-badge">● LIVE • ${c.name}</span>
+
+            <div class="ptz-pad" title="Điều khiển xoay Camera">
+              <div></div>
+              <button class="ptz-btn" onclick="sendPTZ('${c.id}', 'up')">▲</button>
+              <div></div>
+              <button class="ptz-btn" onclick="sendPTZ('${c.id}', 'left')">◀</button>
+              <button class="ptz-btn" onclick="sendPTZ('${c.id}', 'stop')">●</button>
+              <button class="ptz-btn" onclick="sendPTZ('${c.id}', 'right')">▶</button>
+              <div></div>
+              <button class="ptz-btn" onclick="sendPTZ('${c.id}', 'down')">▼</button>
+              <div></div>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+            <span style="font-size:0.8rem; color:var(--text-secondary);">${c.brand.toUpperCase()} • ${c.ip}</span>
+            <div style="display:flex; gap:6px;">
+              <button class="mirror-btn ptt-btn" style="padding:5px 10px; font-size:0.76rem;"
+                onmousedown="startTalking('${c.id}', this)" onmouseup="stopTalking(this)"
+                ontouchstart="startTalking('${c.id}', this)" ontouchend="stopTalking(this)">Giữ để nói</button>
+              <button class="mirror-btn" style="padding:5px 10px; font-size:0.76rem;" onclick="toggleSingleCamFullscreen('${c.id}')">Phóng to</button>
+              ${isAdmin ? `<button class="mirror-btn danger" style="padding:5px 10px; font-size:0.76rem;" onclick="deleteCamera('${c.id}')">Xóa</button>` : ''}
+            </div>
+          </div>
+        </div>
+      `).join("");
+
+      data.cameras.forEach(c => {
+        const video = document.getElementById("vid_" + c.id);
+        const hlsUrl = `/hls/${c.id}/index.m3u8`;
+        if (Hls.isSupported()) {
+          const hls = new Hls({ lowLatencyMode: true });
+          hls.loadSource(hlsUrl);
+          hls.attachMedia(video);
+        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+          video.src = hlsUrl;
+        }
+      });
+    }
+
+    async function discoverCameras() {
+      const box = document.getElementById("discoveredList");
+      box.innerHTML = "<span>Đang dò tìm IP camera...</span>";
+      const data = await fetch("/api/cameras/discover", { headers: getAuthHeaders() }).then(r => r.json());
+      box.innerHTML = data.devices.map(d => `<button class="mirror-btn" onclick="document.getElementById('camIp').value='${d.ip}'">IP: ${d.ip}</button>`).join("") || "<span>Không tự tìm thấy, hãy nhập tay bên dưới.</span>";
+    }
+
+    async function addCamera() {
+      const payload = {
+        name: document.getElementById("camName").value || "Camera Gia Đình",
+        ip: document.getElementById("camIp").value.trim(),
+        brand: document.getElementById("camBrand").value,
+        cam_user: document.getElementById("camUser").value.trim(),
+        cam_pass: document.getElementById("camPass").value.trim()
+      };
+      if (!payload.ip) return alert("Vui lòng nhập IP Camera");
+      await fetch("/api/cameras", { method: "POST", headers: getAuthHeaders(), body: JSON.stringify(payload) });
+      loadCameras();
+      alert("Đã thêm camera thành công!");
+    }
+
+    async function deleteCamera(id) {
+      if (!confirm("Xóa camera này khỏi hệ thống?")) return;
+      await fetch(`/api/cameras/${id}`, { method: "DELETE", headers: getAuthHeaders() });
+      loadCameras();
+    }
+
+    // --- PLAYBACK & STORAGE ---
+    async function loadRecordings() {
+      const data = await fetch("/api/recordings", { headers: getAuthHeaders() }).then(r => r.json());
+      document.getElementById("recordingList").innerHTML = data.recordings.map(r => `
+        <div class="mirror-btn" style="justify-content:space-between; width:100%;" onclick="playRecording('${r.url}')">
+          <span>${r.created_at}</span><span style="font-size:0.75rem;">${r.size_mb} MB</span>
+        </div>
+      `).join("") || "<p style='font-size:0.85rem;'>Chưa có video ghi hình.</p>";
+    }
+
+    function playRecording(url) {
+      const v = document.getElementById("playbackVideo");
+      v.src = url;
+      v.play();
+    }
+
+    function setSpeed(rate, btn) {
+      document.getElementById("playbackVideo").playbackRate = rate;
+      document.getElementById("playbackSpeedBadge").innerText = `Tốc độ: ${rate}x`;
+      document.querySelectorAll(".speed-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+    }
+
+    function skipSeconds(sec) {
+      const v = document.getElementById("playbackVideo");
+      v.currentTime = Math.max(0, v.currentTime + sec);
+    }
+
+    function toggleZoomVideo() {
+      isZoomed = !isZoomed;
+      document.getElementById("playbackVideo").style.transform = isZoomed ? "scale(2)" : "scale(1)";
+    }
+
+    function captureSnapshot() {
+      const v = document.getElementById("playbackVideo");
+      const c = document.createElement("canvas");
+      c.width = v.videoWidth || 1280; c.height = v.videoHeight || 720;
+      c.getContext("2d").drawImage(v, 0, 0);
+      const a = document.createElement("a");
+      a.href = c.toDataURL("image/jpeg");
+      a.download = `CamHub_${Date.now()}.jpg`;
+      a.click();
+    }
+
+    async function loadStorage() {
+      const s = await fetch("/api/storage", { headers: getAuthHeaders() }).then(r => r.json());
+      document.getElementById("navStoragePill").innerText = `Trống: ${s.free_gb} / ${s.total_gb} GB`;
+      document.getElementById("storageDetailText").innerText = `Video đã dùng: ${s.camera_used_mb} MB • Trống: ${s.free_gb} GB`;
+      document.getElementById("storageBar").style.width = Math.min(100, Math.round((s.used_gb / s.total_gb) * 100)) + "%";
+      document.getElementById("retentionInput").value = s.retention_days;
+    }
+
+    async function saveRetention() {
+      const days = parseInt(document.getElementById("retentionInput").value || "30");
+      await fetch("/api/storage/retention", { method: "POST", headers: getAuthHeaders(), body: JSON.stringify({ days }) });
+      loadStorage();
+      alert("Đã lưu thời gian xoay vòng!");
+    }
+
+    // --- ALERTS, TELEGRAM & SECURITY ---
+    async function loadAlerts() {
+      const data = await fetch("/api/alerts", { headers: getAuthHeaders() }).then(r => r.json());
+      document.getElementById("alertsContainer").innerHTML = data.alerts.map(a => `
+        <div class="glass cam-card" style="border-left:4px solid ${a.type === 'fall' ? 'var(--danger)' : 'var(--warning)'};">
+          <img src="${a.snapshot}" style="width:100%; border-radius:12px; aspect-ratio:16/9; object-fit:cover;" />
+          <strong>${a.message}</strong>
+          <span style="font-size:0.78rem; color:var(--text-secondary);">${a.timestamp}</span>
+        </div>
+      `).join("") || "<p>Chưa có cảnh báo nào.</p>";
+
+      if (data.alerts.length > lastAlertCount && lastAlertCount !== 0) {
+        const latest = data.alerts[0];
+        const toast = document.getElementById("alertToast");
+        document.getElementById("alertTitle").innerText = latest.type === "fall" ? "CẢNH BÁO TÉ NGÃ!" : "PHÁT HIỆN CHUYỂN ĐỘNG";
+        document.getElementById("alertBody").innerText = latest.message;
+        toast.style.display = "block";
+        setTimeout(() => toast.style.display = "none", 7000);
+      }
+      lastAlertCount = data.alerts.length;
+    }
+
+    async function loadSecurityAndTelegram() {
+      const tg = await fetch("/api/telegram/config", { headers: getAuthHeaders() }).then(r => r.json());
+      document.getElementById("tgBotToken").value = tg.bot_token || "";
+      document.getElementById("tgChatId").value = tg.chat_id || "";
+      document.getElementById("tgFallCheck").checked = tg.alert_fall;
+      document.getElementById("tgMotionCheck").checked = tg.alert_motion;
+      loadLoginLogs();
+    }
+
+    async function saveTelegramConfig() {
+      const payload = {
+        bot_token: document.getElementById("tgBotToken").value,
+        chat_id: document.getElementById("tgChatId").value,
+        alert_fall: document.getElementById("tgFallCheck").checked,
+        alert_motion: document.getElementById("tgMotionCheck").checked
+      };
+      await fetch("/api/telegram/config", { method: "POST", headers: getAuthHeaders(), body: JSON.stringify(payload) });
+      alert("Đã lưu cấu hình Telegram Bot!");
+    }
+
+    async function testTelegram() {
+      const res = await fetch("/api/telegram/test", { method: "POST", headers: getAuthHeaders() });
+      alert(res.ok ? "Đã gửi tin nhắn thử nghiệm thành công tới Telegram!" : "Gửi thất bại, hãy kiểm tra lại Token và Chat ID.");
+    }
+
+    async function changePassword() {
+      const old_password = document.getElementById("oldPassInput").value;
+      const new_password = document.getElementById("newPassInput").value;
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST", headers: getAuthHeaders(), body: JSON.stringify({ old_password, new_password })
+      });
+      if (!res.ok) return alert("Mật khẩu cũ không đúng hoặc mật khẩu mới quá ngắn!");
+      document.getElementById("oldPassInput").value = "";
+      document.getElementById("newPassInput").value = "";
+      if (localStorage.getItem("camhub_saved_pass")) localStorage.setItem("camhub_saved_pass", btoa(new_password));
+      alert("Đổi mật khẩu thành công!");
+      loadLoginLogs();
+    }
+
+    async function loadLoginLogs() {
+      const data = await fetch("/api/security/login-logs", { headers: getAuthHeaders() }).then(r => r.json());
+      document.getElementById("loginLogsList").innerHTML = data.logs.map(l => `
+        <div class="glass" style="padding:9px 12px; border-radius:12px; display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; border-left:3px solid ${l.status.includes('Thất bại') ? 'var(--danger)' : 'var(--success)'};">
+          <div>
+            <strong>@${l.username}</strong> • <span>${l.status}</span>
+            <div style="color:var(--text-secondary); font-size:0.74rem;">IP: ${l.ip} • ${l.device}</div>
+          </div>
+          <span style="color:var(--text-secondary); font-size:0.74rem; white-space:nowrap;">${l.time}</span>
+        </div>
+      `).join("");
+    }
+
+    function initDashboard() {
+      loadCameras();
+      loadStorage();
+      loadAlerts();
+      loadDeviceHealth();
+      if (localStorage.getItem("camhub_role") === "admin") loadTunnelInfo();
+      setInterval(loadStorage, 30000);
+      setInterval(loadAlerts, 5000);
+      setInterval(loadDeviceHealth, 25000);
+    }
+
+    checkAuth();
+  </script>
+</body>
+</html>
