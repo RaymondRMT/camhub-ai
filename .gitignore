@@ -1,0 +1,30 @@
+# Python & Virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Runtime database, secrets & logs
+camhub.db
+camhub.db-shm
+camhub.db-wal
+.jwt_secret
+*.log
+mediamtx
+mediamtx.yml
+*.tar.gz
+*.zip
+
+# Media & Captures
+recordings/
+snapshots/
+
+# OS & Editor junk
+.DS_Store
+Thumbs.db
+New Text Document.txt
+old/
+.vscode/
+.idea/
