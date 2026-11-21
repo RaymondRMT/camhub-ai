@@ -3,6 +3,7 @@ import time
 import math
 import json
 import uuid
+import shutil
 import subprocess
 import threading
 from datetime import datetime
@@ -17,7 +18,6 @@ except Exception:
     mp = None
     HAS_MEDIAPIPE = False
 
-# Tối ưu tùy chọn FFmpeg cho luồng RTSP: dùng TCP ổn định và đặt timeout 5 giây tránh treo cap.read()
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
 
 
@@ -29,14 +29,14 @@ class CameraAIProcessor:
         self.frames = {}
         self.frames_lock = threading.Lock()
         self.cam_status = {}
-        self.thermal_delay = 0.15  # Mặc định ~6 FPS
+        self.thermal_delay = 0.20  # Mặc định ~5 FPS tiết kiệm pin & giảm nhiệt
         os.makedirs("snapshots", exist_ok=True)
 
         self.mp_pose = mp.solutions.pose if HAS_MEDIAPIPE else None
+        self.has_ffmpeg_cli = shutil.which("ffmpeg") is not None
         threading.Thread(target=self._thermal_guard_loop, daemon=True).start()
 
     def _read_device_temp(self) -> Optional[float]:
-        # 1. Thử đọc qua Termux API (khi chạy trên Android Termux)
         try:
             raw = subprocess.check_output(
                 ["termux-battery-status"],
@@ -46,7 +46,6 @@ class CameraAIProcessor:
             return float(json.loads(raw).get("temperature", 35.0))
         except Exception:
             pass
-        # 2. Fallback đọc cảm biến nhiệt Linux/Ubuntu proot
         for path in (
             "/sys/class/thermal/thermal_zone0/temp",
             "/sys/class/power_supply/battery/temp",
@@ -66,9 +65,9 @@ class CameraAIProcessor:
             temp = self._read_device_temp()
             if temp is not None:
                 if temp >= 43.0:
-                    self.thermal_delay = 0.50
+                    self.thermal_delay = 0.55
                 elif temp <= 38.5:
-                    self.thermal_delay = 0.15
+                    self.thermal_delay = 0.20
             time.sleep(20)
 
     def start_camera_monitor(self, cam_id: str, cam_name: str, rtsp_url: str):
@@ -108,21 +107,19 @@ class CameraAIProcessor:
             st = dict(self.cam_status.get(cam_id, {}))
         if not st:
             return {"online": False, "engine": "mediapipe" if HAS_MEDIAPIPE else "contour"}
-        # Xem là online nếu có khung hình trong 15 giây gần nhất
         is_recent = (time.time() - st.get("last_frame_ts", 0.0)) < 15.0
         st["online"] = bool(st.get("online") and is_recent)
         return st
 
     def build_placeholder_jpeg(self, title: str, subtitle: str = "Dang ket noi luong camera...") -> bytes:
         canvas = np.zeros((360, 640, 3), dtype=np.uint8)
-        canvas[:] = (22, 16, 12)  # BGR dark slate
+        canvas[:] = (22, 16, 12)
         cv2.putText(canvas, title[:36], (36, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (248, 250, 252), 2, cv2.LINE_AA)
         cv2.putText(canvas, subtitle[:50], (36, 208), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (148, 163, 184), 1, cv2.LINE_AA)
         ok, buf = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         return buf.tobytes() if ok else b""
 
     def trigger_test_fall_alert(self, cam_id: str, cam_name: str) -> dict:
-        """Tạo cảnh báo té ngã thử nghiệm để kiểm tra toàn bộ luồng AI -> Web -> Telegram."""
         ts_ms = int(time.time() * 1000)
         snap_file = f"snapshots/fall_test_{cam_id}_{ts_ms}.jpg"
         latest = self.get_latest_frame(cam_id)
@@ -155,7 +152,6 @@ class CameraAIProcessor:
         l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
         r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
 
-        # Kiểm tra độ tin cậy (visibility) của các khớp chính để tránh báo giả khi khuất hình
         if min(l_shoulder.visibility, r_shoulder.visibility, l_hip.visibility, r_hip.visibility) < 0.35:
             return 0.0
 
@@ -169,7 +165,6 @@ class CameraAIProcessor:
         return math.degrees(math.atan2(dx, dy))
 
     def _detect_horizontal_posture_fallback(self, fg_mask) -> bool:
-        """Fallback phát hiện tư thế nằm ngang bằng hình học Contour khi thiết bị không hỗ trợ MediaPipe."""
         contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return False
@@ -179,13 +174,148 @@ class CameraAIProcessor:
         _, _, w, h = cv2.boundingRect(largest)
         return (w / float(h + 1e-6)) > 1.35
 
-    def _open_capture(self, rtsp_url: str):
-        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        return cap
+    def _spawn_ffmpeg_mjpeg(self, rtsp_url: str, transport: str):
+        """Giải mã RTSP trực tiếp bằng FFmpeg hệ thống (tương thích 100% ARM64 Ubuntu, tránh lỗi OpenCV VIDEOIO)."""
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-rtsp_transport", transport,
+            "-rw_timeout", "7000000",
+            "-i", rtsp_url,
+            "-vf", "scale=640:360",
+            "-r", "5",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-q:v", "6",
+            "-",
+        ]
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+
+    def _iter_ffmpeg_jpegs(self, rtsp_url: str, transport: str, stop_event: threading.Event):
+        proc = self._spawn_ffmpeg_mjpeg(rtsp_url, transport)
+        buf = bytearray()
+        try:
+            while not stop_event.is_set():
+                if not proc.stdout:
+                    break
+                chunk = proc.stdout.read(8192)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                while True:
+                    start = buf.find(b"\xff\xd8")
+                    if start == -1:
+                        if len(buf) > 131072:
+                            buf.clear()
+                        break
+                    end = buf.find(b"\xff\xd9", start + 2)
+                    if end == -1:
+                        if start > 0:
+                            del buf[:start]
+                        break
+                    jpg = bytes(buf[start : end + 2])
+                    del buf[: end + 2]
+                    yield jpg
+        finally:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def _analyze_frame(
+        self,
+        cam_id: str,
+        cam_name: str,
+        jpg_bytes: bytes,
+        bg_subtractor,
+        local_pose,
+        state: dict,
+    ):
+        now = time.time()
+        with self.frames_lock:
+            self.frames[cam_id] = jpg_bytes
+            self.cam_status[cam_id] = {
+                "online": True,
+                "engine": "mediapipe" if local_pose is not None else "contour",
+                "last_frame_ts": now,
+            }
+
+        # Giãn nhịp phân tích AI theo nhiệt độ máy để tiết kiệm CPU
+        if now - state["last_ai_ts"] < self.thermal_delay:
+            return
+        state["last_ai_ts"] = now
+
+        arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return
+
+        small = cv2.resize(frame, (480, 270))
+        h_start = state["horizontal_start_time"]
+        lr = 0.0 if (h_start is not None and (now - h_start) < 10.0) else -1.0
+        fg_mask = bg_subtractor.apply(small, learningRate=lr)
+        has_motion = cv2.countNonZero(fg_mask) > 2800
+
+        if has_motion and (now - state["last_motion_alert"] > 30.0):
+            ts_ms = int(now * 1000)
+            snap_file = f"snapshots/motion_{cam_id}_{ts_ms}.jpg"
+            with open(snap_file, "wb") as f:
+                f.write(jpg_bytes)
+            self.on_alert({
+                "id": f"motion_{cam_id}_{ts_ms}_{uuid.uuid4().hex[:6]}",
+                "type": "motion",
+                "cam_id": cam_id,
+                "cam_name": cam_name,
+                "message": f"Phát hiện chuyển động tại {cam_name}",
+                "snapshot": f"/{snap_file}",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            state["last_motion_alert"] = now
+
+        if has_motion or (state["horizontal_start_time"] is not None):
+            is_horizontal = False
+            if local_pose is not None:
+                rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                results = local_pose.process(rgb)
+                if results and results.pose_landmarks:
+                    angle = self._calculate_body_angle(results.pose_landmarks.landmark)
+                    is_horizontal = angle > 58.0
+            else:
+                is_horizontal = self._detect_horizontal_posture_fallback(fg_mask)
+
+            if is_horizontal:
+                if state["horizontal_start_time"] is None:
+                    state["horizontal_start_time"] = now
+                elif (now - state["horizontal_start_time"]) >= 2.5 and (now - state["last_fall_alert"] > 20.0):
+                    ts_ms = int(now * 1000)
+                    snap_file = f"snapshots/fall_{cam_id}_{ts_ms}.jpg"
+                    with open(snap_file, "wb") as f:
+                        f.write(jpg_bytes)
+                    self.on_alert({
+                        "id": f"fall_{cam_id}_{ts_ms}_{uuid.uuid4().hex[:6]}",
+                        "type": "fall",
+                        "cam_id": cam_id,
+                        "cam_name": cam_name,
+                        "message": f"KHẨN CẤP: Phát hiện người bị té ngã tại {cam_name}!",
+                        "snapshot": f"/{snap_file}",
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    })
+                    state["last_fall_alert"] = now
+                    state["horizontal_start_time"] = None
+            else:
+                state["horizontal_start_time"] = None
 
     def _process_loop(self, cam_id: str, cam_name: str, rtsp_url: str, stop_event: threading.Event):
-        # Khởi tạo instance MediaPipe Pose riêng cho từng luồng camera để tránh xung đột đa luồng
         local_pose = None
         if HAS_MEDIAPIPE and self.mp_pose is not None:
             try:
@@ -198,106 +328,59 @@ class CameraAIProcessor:
             except Exception:
                 local_pose = None
 
-        cap = self._open_capture(rtsp_url)
         bg_subtractor = cv2.createBackgroundSubtractorMOG2(
             history=300, varThreshold=40, detectShadows=False
         )
+        state = {
+            "last_ai_ts": 0.0,
+            "last_motion_alert": 0.0,
+            "last_fall_alert": 0.0,
+            "horizontal_start_time": None,
+        }
 
-        last_motion_alert = 0.0
-        last_fall_alert = 0.0
-        horizontal_start_time = None
+        transports = ["tcp", "udp"]
+        t_idx = 0
+        retry_delay = 5.0
 
         try:
             while not stop_event.is_set():
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    with self.frames_lock:
-                        if cam_id in self.cam_status:
-                            self.cam_status[cam_id]["online"] = False
-                    cap.release()
-                    if stop_event.wait(3.0):
-                        break
-                    cap = self._open_capture(rtsp_url)
-                    continue
+                got_frame = False
+                if self.has_ffmpeg_cli:
+                    transport = transports[t_idx % len(transports)]
+                    for jpg in self._iter_ffmpeg_jpegs(rtsp_url, transport, stop_event):
+                        got_frame = True
+                        retry_delay = 5.0
+                        self._analyze_frame(cam_id, cam_name, jpg, bg_subtractor, local_pose, state)
+                    if not got_frame:
+                        t_idx += 1  # Tự động chuyển thử giữa TCP <-> UDP (hữu ích cho Yoosee/ONVIF)
+                else:
+                    cap = cv2.VideoCapture(rtsp_url)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    try:
+                        while not stop_event.is_set():
+                            ret, frame = cap.read()
+                            if not ret or frame is None:
+                                break
+                            got_frame = True
+                            retry_delay = 5.0
+                            preview = cv2.resize(frame, (640, 360))
+                            ok, buf = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                            if ok:
+                                self._analyze_frame(cam_id, cam_name, buf.tobytes(), bg_subtractor, local_pose, state)
+                            if stop_event.wait(self.thermal_delay):
+                                break
+                    finally:
+                        cap.release()
 
-                now = time.time()
+                with self.frames_lock:
+                    if cam_id in self.cam_status:
+                        self.cam_status[cam_id]["online"] = False
 
-                # Lưu khung hình JPEG mới nhất vào bộ đệm để phục vụ MJPEG fallback & Snapshot nhanh
-                try:
-                    preview = cv2.resize(frame, (640, 360))
-                    ok_jpg, buf = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                    if ok_jpg:
-                        with self.frames_lock:
-                            self.frames[cam_id] = buf.tobytes()
-                            self.cam_status[cam_id] = {
-                                "online": True,
-                                "engine": "mediapipe" if local_pose is not None else "contour",
-                                "last_frame_ts": now,
-                            }
-                except Exception:
-                    pass
-
-                small = cv2.resize(frame, (480, 270))
-
-                # Khi đang theo dõi nghi ngờ té ngã (< 10s), giữ nguyên mô hình nền (learningRate=0)
-                # để nạn nhân nằm bất động không bị MOG2 hòa trộn vào nền
-                lr = 0.0 if (horizontal_start_time is not None and (now - horizontal_start_time) < 10.0) else -1.0
-                fg_mask = bg_subtractor.apply(small, learningRate=lr)
-                motion_pixels = cv2.countNonZero(fg_mask)
-                has_motion = motion_pixels > 2800
-
-                if has_motion and (now - last_motion_alert > 30.0):
-                    ts_ms = int(now * 1000)
-                    snap_file = f"snapshots/motion_{cam_id}_{ts_ms}.jpg"
-                    cv2.imwrite(snap_file, frame)
-                    self.on_alert({
-                        "id": f"motion_{cam_id}_{ts_ms}_{uuid.uuid4().hex[:6]}",
-                        "type": "motion",
-                        "cam_id": cam_id,
-                        "cam_name": cam_name,
-                        "message": f"Phát hiện chuyển động tại {cam_name}",
-                        "snapshot": f"/{snap_file}",
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    last_motion_alert = now
-
-                # Chạy phân tích dáng người khi có chuyển động HOẶC đang theo dõi nghi ngờ té ngã
-                if has_motion or (horizontal_start_time is not None):
-                    is_horizontal = False
-                    if local_pose is not None:
-                        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                        results = local_pose.process(rgb)
-                        if results and results.pose_landmarks:
-                            angle = self._calculate_body_angle(results.pose_landmarks.landmark)
-                            is_horizontal = angle > 58.0
-                    else:
-                        is_horizontal = self._detect_horizontal_posture_fallback(fg_mask)
-
-                    if is_horizontal:
-                        if horizontal_start_time is None:
-                            horizontal_start_time = now
-                        elif (now - horizontal_start_time) >= 2.5 and (now - last_fall_alert > 20.0):
-                            ts_ms = int(now * 1000)
-                            snap_file = f"snapshots/fall_{cam_id}_{ts_ms}.jpg"
-                            cv2.imwrite(snap_file, frame)
-                            self.on_alert({
-                                "id": f"fall_{cam_id}_{ts_ms}_{uuid.uuid4().hex[:6]}",
-                                "type": "fall",
-                                "cam_id": cam_id,
-                                "cam_name": cam_name,
-                                "message": f"KHẨN CẤP: Phát hiện người bị té ngã tại {cam_name}!",
-                                "snapshot": f"/{snap_file}",
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            })
-                            last_fall_alert = now
-                            horizontal_start_time = None
-                    else:
-                        horizontal_start_time = None
-
-                if stop_event.wait(self.thermal_delay):
+                if stop_event.wait(retry_delay):
                     break
+                # Giãn thời gian thử lại (5s -> 15s) khi camera mất kết nối để không làm nóng máy
+                retry_delay = min(15.0, retry_delay + 3.0)
         finally:
-            cap.release()
             if local_pose is not None:
                 try:
                     local_pose.close()
