@@ -1513,6 +1513,7 @@ def get_device_health(user: dict = Depends(get_current_user)):
             "temperature": info.get("temperature", 35.0),
             "status": info.get("status", "OPTIMAL"),
             "ai_engine": ai_engine.active_engine_label,
+        "ai_overlay": ai_engine.ai_overlay_enabled,
             **sys_info,
         }
     except Exception:
@@ -1605,7 +1606,7 @@ def list_recordings(user: dict = Depends(get_current_user)):
                 elif lower.startswith("motion_"):
                     category, label = "motion", "Chuyển động (~60s)"
                 else:
-                    category, label = "continuous", "Video dài (30p)"
+                    category, label = "continuous", "Video dài (60p)"
                 items.append({
                     "_mtime": mtime,
                     "filename": f,
@@ -1660,6 +1661,17 @@ def get_ai_learning(user: dict = Depends(get_current_user)):
 def reset_ai_learning(admin: dict = Depends(require_admin)):
     ai_engine.learner.reset()
     return {"status": "ok"}
+
+@app.get("/api/ai/overlay")
+def get_ai_overlay(user: dict = Depends(get_current_user)):
+    return {"enabled": ai_engine.ai_overlay_enabled}
+
+
+@app.post("/api/ai/overlay")
+def set_ai_overlay(payload: dict, user: dict = Depends(get_current_user)):
+    ai_engine.ai_overlay_enabled = bool(payload.get("enabled", True))
+    return {"status": "ok", "enabled": ai_engine.ai_overlay_enabled}
+
 
 
 @app.post("/api/alerts/test-fall")
