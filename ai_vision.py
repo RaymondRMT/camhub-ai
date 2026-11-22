@@ -700,6 +700,9 @@ class CameraAIProcessor:
                 "horizontal_start_time": None,
                 "last_upright_ts": 0.0,
                 "prev_bbox_h": 0,
+                "burst_active": False,
+                "burst_start": 0.0,
+                "burst_best": None,
             }
         st = lens_states[lens_idx]
         st["frames_seen"] += 1
@@ -723,28 +726,59 @@ class CameraAIProcessor:
                     bx, by, bw, bh = cv2.boundingRect(c)
                     person_boxes.append((int(bx * sx), int(by * sy), int(bw * sx), int(bh * sy)))
 
-        if has_motion and (now - st["last_motion_alert"] > 30.0):
-            ts_ms = int(now * 1000)
-            snap_file = f"snapshots/motion_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
-            with open(snap_file, "wb") as f:
-                f.write(lens_jpg)
-            details = self.enhancer.extract_detail_crops(
-                lens_img, f"motion_{cam_id}_L{lens_idx}_{ts_ms}", person_boxes
-            )
+        # Thu thập chuỗi khung hình trong 3.5 giây khi có chuyển động để chọn ảnh sắc nét & đầy đủ nhất trước khi gửi Telegram
+        if has_motion and not st["burst_active"] and (now - st["last_motion_alert"] > 30.0):
+            st["burst_active"] = True
+            st["burst_start"] = now
+            st["burst_best"] = None
             cm = self.clip_managers.get(cam_id)
             if cm is not None:
                 cm.trigger_clip("motion")
-            self.on_alert({
-                "id": f"motion_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
-                "type": "motion",
-                "cam_id": cam_id,
-                "cam_name": label_name,
-                "message": f"Phát hiện chuyển động tại {label_name}",
-                "snapshot": f"/{snap_file}",
-                "detail_snapshots": details,
-                "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
-            })
-            st["last_motion_alert"] = now
+
+        if st["burst_active"]:
+            if person_boxes:
+                ih, iw = lens_img.shape[:2]
+                bx, by, bw, bh = max(person_boxes, key=lambda b: b[2] * b[3])
+                roi = lens_img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
+                sharp = float(cv2.Laplacian(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()) if roi.size > 0 else 0.0
+                # Ưu tiên khung hình đối tượng nằm gọn trong ảnh (không bị cắt nửa người/xe ở sát mép) + độ nét cao
+                margin_ok = 1.0 if (bx > 8 and by > 8 and (bx + bw) < (iw - 8) and (by + bh) < (ih - 8)) else 0.45
+                score = (bw * bh) * margin_ok * (1.0 + min(3.0, sharp / 120.0))
+                if st["burst_best"] is None or score > st["burst_best"]["score"]:
+                    st["burst_best"] = {
+                        "score": score,
+                        "img": lens_img.copy(),
+                        "jpg": lens_jpg,
+                        "boxes": list(person_boxes),
+                    }
+
+            if (now - st["burst_start"]) >= 3.5:
+                best = st["burst_best"] or {
+                    "img": lens_img,
+                    "jpg": lens_jpg,
+                    "boxes": person_boxes,
+                }
+                st["burst_active"] = False
+                st["burst_best"] = None
+                st["last_motion_alert"] = now
+
+                ts_ms = int(now * 1000)
+                snap_file = f"snapshots/motion_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
+                with open(snap_file, "wb") as f:
+                    f.write(best["jpg"])
+                details = self.enhancer.extract_detail_crops(
+                    best["img"], f"motion_{cam_id}_L{lens_idx}_{ts_ms}", best["boxes"]
+                )
+                self.on_alert({
+                    "id": f"motion_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
+                    "type": "motion",
+                    "cam_id": cam_id,
+                    "cam_name": label_name,
+                    "message": f"Phát hiện chuyển động tại {label_name}",
+                    "snapshot": f"/{snap_file}",
+                    "detail_snapshots": details,
+                    "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
+                })
 
         if has_motion or (st["horizontal_start_time"] is not None):
             is_horizontal = False
