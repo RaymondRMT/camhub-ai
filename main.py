@@ -39,7 +39,7 @@ except Exception:
     ONVIFCamera = None
     HAS_ONVIF = False
 
-from ai_vision import CameraAIProcessor, HAS_MEDIAPIPE
+from ai_vision import CameraAIProcessor, HAS_MEDIAPIPE, now_vn
 
 os.makedirs("static", exist_ok=True)
 os.makedirs("recordings", exist_ok=True)
@@ -284,7 +284,7 @@ def log_login_attempt(username: str, status: str, request: Request):
     with get_db_connection() as conn:
         conn.execute(
             "INSERT INTO login_logs (username, status, ip_address, user_agent, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (username, status, ip, ua, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            (username, status, ip, ua, now_vn().strftime("%Y-%m-%d %H:%M:%S")),
         )
         conn.execute("DELETE FROM login_logs WHERE id NOT IN (SELECT id FROM login_logs ORDER BY id DESC LIMIT 100)")
         conn.commit()
@@ -673,7 +673,7 @@ def setup_admin(req: RegisterAdminRequest, request: Request):
         try:
             conn.execute(
                 "INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', ?)",
-                (username, display_name, pwd_hash, datetime.now().strftime("%Y-%m-%d %H:%M")),
+                (username, display_name, pwd_hash, now_vn().strftime("%Y-%m-%d %H:%M")),
             )
             conn.commit()
         except sqlite3.IntegrityError:
@@ -832,7 +832,7 @@ def create_family_member(req: FamilyMemberRequest, admin: dict = Depends(require
         try:
             conn.execute(
                 "INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES (?, ?, ?, 'member', ?)",
-                (username, display_name, hash_password(req.password), datetime.now().strftime("%Y-%m-%d %H:%M")),
+                (username, display_name, hash_password(req.password), now_vn().strftime("%Y-%m-%d %H:%M")),
             )
             conn.commit()
             return {"status": "ok"}
@@ -1308,7 +1308,7 @@ def get_device_health(user: dict = Depends(get_current_user)):
             "battery_pct": info.get("percentage", 100),
             "temperature": info.get("temperature", 35.0),
             "status": info.get("status", "OPTIMAL"),
-            "ai_engine": "MediaPipe Pose" if HAS_MEDIAPIPE else "OpenCV Contour",
+            "ai_engine": ai_engine.active_engine_label,
         }
     except Exception:
         temp = ai_engine._read_device_temp() or 35.0
@@ -1316,7 +1316,7 @@ def get_device_health(user: dict = Depends(get_current_user)):
             "battery_pct": 100,
             "temperature": round(temp, 1),
             "status": "OPTIMAL",
-            "ai_engine": "MediaPipe Pose" if HAS_MEDIAPIPE else "OpenCV Contour",
+            "ai_engine": ai_engine.active_engine_label,
         }
 
 
