@@ -491,6 +491,7 @@
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn sm active" id="splitLensesBtn" onclick="toggleSplitLenses()" title="Tự động tách camera 2/3 mắt thành các khung riêng">Tách đa mắt: BẬT</button>
+            <button class="btn sm" id="streamModeBtn" onclick="toggleRemoteSafeMode()" title="Chuyển giữa MJPEG liên tục và Chống đứng hình qua Tunnel">Chế độ: Tự động</button>
             <button class="btn sm admin-only" onclick="jumpToView('setup')">+ Thêm Camera</button>
             <button class="btn sm primary" onclick="toggleGridFullscreen()">Toàn màn hình lưới</button>
           </div>
@@ -833,6 +834,8 @@
     let focusedCamId = null;
     let focusedLensIndex = 0;
     let splitLensesEnabled = localStorage.getItem("camhub_split_lenses") !== "0";
+    let safeSnapshotTimers = [];
+    let forceSafeStream = localStorage.getItem("camhub_safe_stream") || "auto";
     let ptzSpeed = 0.6;
     let digitalZoom = 1.0;
     let panX = 0;
@@ -1035,6 +1038,47 @@
     function destroyActiveHls() {
       activeHlsInstances.forEach(hls => { try { hls.destroy(); } catch (_) {} });
       activeHlsInstances = [];
+      safeSnapshotTimers.forEach(id => clearTimeout(id));
+      safeSnapshotTimers = [];
+    }
+
+    function useSafeSnapshotMode() {
+      if (forceSafeStream === "safe") return true;
+      if (forceSafeStream === "mjpeg") return false;
+      return location.hostname.includes("trycloudflare.com") || location.protocol === "https:";
+    }
+
+    function toggleRemoteSafeMode() {
+      const order = ["auto", "safe", "mjpeg"];
+      const idx = order.indexOf(forceSafeStream);
+      forceSafeStream = order[(idx + 1) % order.length];
+      localStorage.setItem("camhub_safe_stream", forceSafeStream);
+      loadCameras();
+    }
+
+    function startAdaptiveSnapshotLoop(imgEl, snapBaseUrl, intervalMs = 450) {
+      let stopped = false;
+      const tick = () => {
+        if (stopped || !imgEl.isConnected) return;
+        const loader = new Image();
+        const url = `${snapBaseUrl}&_t=${Date.now()}`;
+        loader.onload = () => {
+          if (!stopped && imgEl.isConnected) {
+            imgEl.src = url;
+            const t = setTimeout(tick, intervalMs);
+            safeSnapshotTimers.push(t);
+          }
+        };
+        loader.onerror = () => {
+          if (!stopped && imgEl.isConnected) {
+            const t = setTimeout(tick, 1800);
+            safeSnapshotTimers.push(t);
+          }
+        };
+        loader.src = url;
+      };
+      tick();
+      return () => { stopped = true; };
     }
 
     function toggleSplitLenses() {
@@ -1055,16 +1099,22 @@
       if (lens > 0 || (arguments[5] && String(arguments[5]).toLowerCase() === "yoosee")) {
         videoEl.style.display = "none";
         mjpegEl.style.display = "block";
-        mjpegEl.dataset.baseStream = mjpegUrl;
-        mjpegEl.onerror = () => {
-          setTimeout(() => {
-            if (mjpegEl.isConnected && mjpegEl.dataset.baseStream) {
-              mjpegEl.src = mjpegEl.dataset.baseStream + "&_t=" + Date.now();
-            }
-          }, 2500);
-        };
-        mjpegEl.src = mjpegUrl + "&_t=" + Date.now();
-        if (onModeChange) onModeChange(lens > 0 ? "Mắt " + lens : "MJPEG");
+        const snapUrl = `/api/cameras/${encodeURIComponent(camId)}/snapshot?lens=${lens}&token=${encodeURIComponent(getJwtToken())}`;
+        if (useSafeSnapshotMode()) {
+          startAdaptiveSnapshotLoop(mjpegEl, snapUrl, 450);
+          if (onModeChange) onModeChange(lens > 0 ? "Mắt " + lens : "Tunnel Live");
+        } else {
+          mjpegEl.dataset.baseStream = mjpegUrl;
+          mjpegEl.onerror = () => {
+            setTimeout(() => {
+              if (mjpegEl.isConnected && mjpegEl.dataset.baseStream) {
+                mjpegEl.src = mjpegEl.dataset.baseStream + "&_t=" + Date.now();
+              }
+            }, 2500);
+          };
+          mjpegEl.src = mjpegUrl + "&_t=" + Date.now();
+          if (onModeChange) onModeChange(lens > 0 ? "Mắt " + lens : "MJPEG");
+        }
         return null;
       }
 
@@ -1123,6 +1173,11 @@
       if (splitBtn) {
         splitBtn.classList.toggle("active", splitLensesEnabled);
         splitBtn.innerText = splitLensesEnabled ? "Tách đa mắt: BẬT" : "Tách đa mắt: TẮT";
+      }
+      const modeBtn = document.getElementById("streamModeBtn");
+      if (modeBtn) {
+        const labels = { auto: "Chế độ: Tự động", safe: "Chế độ: Chống đứng", mjpeg: "Chế độ: MJPEG" };
+        modeBtn.innerText = labels[forceSafeStream] || "Chế độ: Tự động";
       }
 
       const tiles = [];
