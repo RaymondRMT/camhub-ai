@@ -197,21 +197,22 @@ class CameraAIProcessor:
         return [frame[i * step : (i + 1) * step if i < lens_count - 1 else h] for i in range(lens_count)]
 
     def _spawn_ffmpeg_mjpeg(self, rtsp_url: str, transport: str):
-        """Giải mã RTSP giữ nguyên tỉ lệ khung hình (640:-2) + format=yuvj420p để tương thích FFmpeg 6/7/8."""
+        """Giải mã RTSP giữ nguyên tỉ lệ khung hình (640:-2), -nostdin & -fps_mode drop xử lý DTS lỗi."""
         cmd = [
             "ffmpeg",
+            "-nostdin",
             "-hide_banner",
             "-loglevel", "error",
-            "-fflags", "nobuffer",
+            "-fflags", "+nobuffer+discardcorrupt",
             "-flags", "low_delay",
             "-analyzeduration", "2000000",
             "-probesize", "2000000",
             "-rtsp_transport", transport,
-            "-rw_timeout", "6000000",
+            "-rw_timeout", "8000000",
             "-i", rtsp_url,
             "-an",
-            "-vf", "scale=640:-2,format=yuvj420p",
-            "-r", "6",
+            "-vf", "fps=6,scale=640:-2,format=yuvj420p",
+            "-fps_mode", "drop",
             "-strict", "unofficial",
             "-f", "image2pipe",
             "-vcodec", "mjpeg",
@@ -220,6 +221,7 @@ class CameraAIProcessor:
         ]
         return subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             bufsize=0,
@@ -404,7 +406,12 @@ class CameraAIProcessor:
         lens_states = {}
         state = {"last_ai_ts": 0.0}
         local_mtx_url = f"rtsp://127.0.0.1:8554/{cam_id}"
+        is_yoosee = "/onvif" in rtsp_url.lower()
         sources = [
+            (rtsp_url, "udp"),
+            (rtsp_url, "tcp"),
+            (local_mtx_url, "tcp"),
+        ] if is_yoosee else [
             (local_mtx_url, "tcp"),
             (rtsp_url, "udp"),
             (rtsp_url, "tcp"),
