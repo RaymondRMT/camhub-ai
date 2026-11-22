@@ -338,9 +338,9 @@ def send_telegram_alert(alert_data: dict):
                         attach_key = f"photo_{i}"
                         entry = {"type": "photo", "media": f"attach://{attach_key}"}
                         if i == 0:
-                            entry["caption"] = item_cap
-                        else:
-                            entry["caption"] = item_cap
+                            detail_tags = " • ".join(str(d.get("label", "")) for d in details[:3] if d.get("label"))
+                            full_cap = item_cap + (f"\n🔍 {detail_tags}" if detail_tags else "")
+                            entry["caption"] = full_cap[:1020]
                         tg_media.append(entry)
                         files_payload[attach_key] = (fname, raw_b, "image/jpeg")
                     resp = httpx.post(
