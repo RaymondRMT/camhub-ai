@@ -292,7 +292,7 @@ class CameraAIProcessor:
             "-timeout", "8000000",
             "-i", rtsp_url,
             "-an",
-            "-vf", "fps=6,scale=640:-2,format=yuvj420p",
+            "-vf", "scale=640:-2,format=yuvj420p",
             "-fps_mode", "drop",
             "-strict", "unofficial",
             "-f", "image2pipe",
@@ -464,9 +464,24 @@ class CameraAIProcessor:
         state: dict,
     ):
         now = time.time()
+        # Giữ nhịp tối đa ~5 FPS ở Python thay vì để ffmpeg lặp khung hình cũ
+        if now - state.get("last_decode_ts", 0.0) < 0.18:
+            return
+        state["last_decode_ts"] = now
+
         arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if frame is None:
+            return
+
+        # Kiểm tra khung hình có bị đóng băng (trùng lặp y hệt > 12s) không
+        tiny = cv2.resize(frame, (64, 36))
+        prev_tiny = state.get("prev_tiny")
+        if prev_tiny is None or float(np.mean(cv2.absdiff(prev_tiny, tiny))) > 0.35:
+            state["prev_tiny"] = tiny
+            state["last_unique_ts"] = now
+        elif now - state.get("last_unique_ts", now) > 12.0:
+            state["force_reconnect"] = True
             return
 
         lens_count = self._detect_lens_count(frame)
@@ -551,12 +566,16 @@ class CameraAIProcessor:
                 got_frame = False
                 if self.has_ffmpeg_cli:
                     src_url, transport = sources[src_idx % len(sources)]
+                    state["force_reconnect"] = False
+                    state["last_unique_ts"] = time.time()
                     for jpg in self._iter_ffmpeg_jpegs(src_url, transport, stop_event):
                         got_frame = True
                         retry_delay = 3.0
                         self._analyze_frame(
                             cam_id, cam_name, jpg, lens_states, local_pose, task_landmarker, state
                         )
+                        if state.get("force_reconnect"):
+                            break
                     if not got_frame:
                         src_idx += 1
                 else:
