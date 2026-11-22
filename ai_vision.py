@@ -1099,7 +1099,7 @@ class CameraAIProcessor:
             "-noautorotate",
             "-hide_banner",
             "-loglevel", "error",
-            "-fflags", "+nobuffer+discardcorrupt",
+            "-fflags", "+nobuffer+discardcorrupt+genpts",
             "-flags", "low_delay",
             "-analyzeduration", "2000000",
             "-probesize", "2000000",
@@ -1116,12 +1116,13 @@ class CameraAIProcessor:
             "-vcodec", "mjpeg",
             "-q:v", "4",
             "-",
-            # Đầu ra 2: Lưu video dài 30 phút/tệp chuẩn H.264 + âm thanh AAC
+            # Đầu ra 2: Lưu video dài 60 phút/tệp chuẩn H.264 + âm thanh AAC (ép keyframe mỗi 3s để luôn xem được ngay)
             "-map", "0:v:0",
             "-map", "0:a?",
             "-vf", "select='not(mod(n,4))',scale='min(720,iw)':-2",
-            "-fps_mode", "drop",
-            "-c:v", "libx264", "-preset", "superfast", "-crf", "33",
+            "-fps_mode", "cfr", "-r", "4",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-g", "12", "-keyint_min", "12", "-sc_threshold", "0", "-crf", "33",
             "-maxrate", "600k", "-bufsize", "1200k",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "48k", "-ar", "16000", "-ac", "1",
@@ -1474,15 +1475,20 @@ class CameraAIProcessor:
         if frame is None:
             return
 
-        # Kiểm tra khung hình có bị đóng băng (trùng lặp y hệt > 12s) không
+        # Kiểm tra khung hình có bị đóng băng (trùng lặp gần như tuyệt đối > 35s) không
         tiny = cv2.resize(frame, (64, 36))
         prev_tiny = state.get("prev_tiny")
-        if prev_tiny is None or float(np.mean(cv2.absdiff(prev_tiny, tiny))) > 0.35:
+        if prev_tiny is None:
             state["prev_tiny"] = tiny
             state["last_unique_ts"] = now
-        elif now - state.get("last_unique_ts", now) > 12.0:
-            state["force_reconnect"] = True
-            return
+        else:
+            diff = cv2.absdiff(prev_tiny, tiny)
+            if float(np.mean(diff)) > 0.08 or int(np.max(diff)) >= 5:
+                state["prev_tiny"] = tiny
+                state["last_unique_ts"] = now
+            elif now - state.get("last_unique_ts", now) > 35.0:
+                state["force_reconnect"] = True
+                return
 
         lens_count = self._detect_lens_count(frame)
         lenses = self._split_lenses(frame, lens_count)
