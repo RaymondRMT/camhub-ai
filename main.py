@@ -1602,8 +1602,8 @@ def get_alerts(user: dict = Depends(get_current_user)):
 @app.post("/api/alerts/{alert_id}/feedback")
 def submit_alert_feedback(alert_id: str, req: AlertFeedbackRequest, user: dict = Depends(get_current_user)):
     verdict = req.verdict.strip().lower()
-    if verdict not in ("true", "false"):
-        raise HTTPException(status_code=400, detail="Giá trị phản hồi phải là 'true' hoặc 'false'")
+    if verdict not in ("true", "false", "plate_wrong"):
+        raise HTTPException(status_code=400, detail="Giá trị phản hồi phải là 'true', 'false' hoặc 'plate_wrong'")
     target = None
     with ALERTS_LOCK:
         for a in ALERTS_LOG:
@@ -1618,6 +1618,7 @@ def submit_alert_feedback(alert_id: str, req: AlertFeedbackRequest, user: dict =
         int(target.get("lens_idx") or 1),
         verdict,
         target.get("norm_boxes") or [],
+        [d.get("rel_box") for d in (target.get("detail_snapshots") or []) if d.get("kind") == "plate" and d.get("rel_box")],
     )
     return {"status": "ok", "verdict": verdict, "learned": updated, "summary": ai_engine.learner.get_summary()}
 
