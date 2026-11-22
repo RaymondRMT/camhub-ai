@@ -197,16 +197,22 @@ class CameraAIProcessor:
         return [frame[i * step : (i + 1) * step if i < lens_count - 1 else h] for i in range(lens_count)]
 
     def _spawn_ffmpeg_mjpeg(self, rtsp_url: str, transport: str):
-        """Giải mã RTSP giữ nguyên tỉ lệ khung hình (640:-2) để tách chuẩn camera 2/3 mắt."""
+        """Giải mã RTSP giữ nguyên tỉ lệ khung hình (640:-2) + format=yuvj420p để tương thích FFmpeg 6/7/8."""
         cmd = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel", "error",
+            "-fflags", "nobuffer",
+            "-flags", "low_delay",
+            "-analyzeduration", "2000000",
+            "-probesize", "2000000",
             "-rtsp_transport", transport,
             "-rw_timeout", "6000000",
             "-i", rtsp_url,
-            "-vf", "scale=640:-2",
+            "-an",
+            "-vf", "scale=640:-2,format=yuvj420p",
             "-r", "6",
+            "-strict", "unofficial",
             "-f", "image2pipe",
             "-vcodec", "mjpeg",
             "-q:v", "6",
