@@ -64,22 +64,28 @@ class FaceAndPlateEnhancer:
 
     @staticmethod
     def enhance_zoom_crop(crop: np.ndarray, min_width: int = 380) -> np.ndarray:
-        """Phóng to LANCZOS4 + cân bằng sáng nhẹ + làm nét tự nhiên, không gây bệt màu."""
+        """Khử ô nén trước khi phóng to LANCZOS4 + làm nét nhẹ tự nhiên để hết vân gợn."""
         if crop is None or crop.size == 0:
             return crop
-        h, w = crop.shape[:2]
+        # Làm mịn ô nén H.265/JPEG trước khi phóng to để tránh khuếch đại vân gợn
+        clean = cv2.bilateralFilter(crop, d=5, sigmaColor=32, sigmaSpace=32)
+        h, w = clean.shape[:2]
         if w < min_width:
             scale = min_width / float(max(1, w))
-            crop = cv2.resize(crop, (max(2, int(round(w * scale))), max(2, int(round(h * scale)))), interpolation=cv2.INTER_LANCZOS4)
+            clean = cv2.resize(
+                clean,
+                (max(2, int(round(w * scale))), max(2, int(round(h * scale)))),
+                interpolation=cv2.INTER_LANCZOS4,
+            )
 
-        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+        lab = cv2.cvtColor(clean, cv2.COLOR_BGR2LAB)
         l_ch, a_ch, b_ch = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=1.6, tileGridSize=(4, 4))
+        clahe = cv2.createCLAHE(clipLimit=1.3, tileGridSize=(4, 4))
         l_eq = clahe.apply(l_ch)
         balanced = cv2.cvtColor(cv2.merge((l_eq, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
 
-        blur = cv2.GaussianBlur(balanced, (0, 0), sigmaX=1.1)
-        return cv2.addWeighted(balanced, 1.28, blur, -0.28, 0)
+        blur = cv2.GaussianBlur(balanced, (0, 0), sigmaX=1.0)
+        return cv2.addWeighted(balanced, 1.15, blur, -0.15, 0)
 
     @staticmethod
     def _clamp_box(x1: int, y1: int, x2: int, y2: int, img_w: int, img_h: int):
@@ -153,10 +159,23 @@ class FaceAndPlateEnhancer:
                 continue
 
             ratio = bw / float(max(1, bh))
+            area = bw * bh
 
-            # 1) Dáng người (cao hơn hoặc gần vuông): cắt từ VAI LÊN ĐẦU (45% phần trên của khung người)
-            if ratio <= 1.05 and person_count < 2:
-                pad_x = int(bw * 0.25)
+            # Chuẩn bị khung mở rộng để kiểm tra xem có phải người đi xe / phương tiện không
+            pad_vx = int(bw * 0.18)
+            pad_vy = int(bh * 0.18)
+            vx1, vy1, vx2, vy2 = self._clamp_box(bx - pad_vx, by - pad_vy, bx + bw + pad_vx, by + bh + pad_vy, iw, ih)
+            veh_crop = img[vy1:vy2, vx1:vx2]
+            plate_box = self._find_plate_in_vehicle(veh_crop) if (veh_crop.size > 0 and area >= 3600) else None
+
+            # Phân loại kết hợp:
+            # - Người đi bộ đứng thẳng: ratio < 0.72 và không có biển số -> chỉ cắt người (từ vai lên)
+            # - Người đang chạy xe (hoặc xe máy/ô tô): ratio >= 0.72 HOẶC phát hiện biển số -> cắt CẢ người (từ vai lên) LẪN xe + biển số!
+            is_rider_or_vehicle = (ratio >= 0.72) or (plate_box is not None)
+            has_person_top = (ratio <= 1.55) or (plate_box is not None and bh >= 65)
+
+            if has_person_top and person_count < 2:
+                pad_x = int(bw * 0.22)
                 top_y = max(0, by - int(bh * 0.10))
                 shoulder_y = min(ih, by + max(36, int(bh * 0.45)))
                 x1, y1, x2, y2 = self._clamp_box(bx - pad_x, top_y, bx + bw + pad_x, shoulder_y, iw, ih)
@@ -167,37 +186,30 @@ class FaceAndPlateEnhancer:
                     cv2.imwrite(out_file, enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                     details.append({
                         "kind": "face",
-                        "label": "👤 Người (Phóng to từ vai lên)",
+                        "label": "👤 Người / Người lái (Từ vai lên)",
                         "url": f"/{out_file}",
                     })
 
-            # 2) Xe cộ (rộng hơn cao hoặc khối lớn): cắt toàn cảnh xe + tìm biển số sau/thân xe
-            elif ratio > 1.05 and vehicle_count < 1:
-                pad_x = int(bw * 0.18)
-                pad_y = int(bh * 0.18)
-                vx1, vy1, vx2, vy2 = self._clamp_box(bx - pad_x, by - pad_y, bx + bw + pad_x, by + bh + pad_y, iw, ih)
-                veh_crop = img[vy1:vy2, vx1:vx2]
-                if veh_crop.size > 0 and (vx2 - vx1) >= 48:
-                    vehicle_count += 1
-                    enhanced_veh = self.enhance_zoom_crop(veh_crop, min_width=460)
-                    out_veh = f"snapshots/{prefix}_vehicle{vehicle_count}.jpg"
-                    cv2.imwrite(out_veh, enhanced_veh, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            if is_rider_or_vehicle and vehicle_count < 1 and veh_crop.size > 0 and (vx2 - vx1) >= 48:
+                vehicle_count += 1
+                enhanced_veh = self.enhance_zoom_crop(veh_crop, min_width=460)
+                out_veh = f"snapshots/{prefix}_vehicle{vehicle_count}.jpg"
+                cv2.imwrite(out_veh, enhanced_veh, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                details.append({
+                    "kind": "vehicle",
+                    "label": "🏍️/🚗 Phương tiện di chuyển",
+                    "url": f"/{out_veh}",
+                })
+                if plate_box is not None:
+                    px1, py1, px2, py2 = plate_box
+                    enhanced_plate = self.enhance_zoom_crop(veh_crop[py1:py2, px1:px2], min_width=360)
+                    out_plate = f"snapshots/{prefix}_plate{vehicle_count}.jpg"
+                    cv2.imwrite(out_plate, enhanced_plate, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                     details.append({
-                        "kind": "vehicle",
-                        "label": "🏍️/🚗 Phương tiện di chuyển",
-                        "url": f"/{out_veh}",
+                        "kind": "plate",
+                        "label": "🔢 Biển số xe (Phóng to)",
+                        "url": f"/{out_plate}",
                     })
-                    plate_box = self._find_plate_in_vehicle(veh_crop)
-                    if plate_box is not None:
-                        px1, py1, px2, py2 = plate_box
-                        enhanced_plate = self.enhance_zoom_crop(veh_crop[py1:py2, px1:px2], min_width=360)
-                        out_plate = f"snapshots/{prefix}_plate{vehicle_count}.jpg"
-                        cv2.imwrite(out_plate, enhanced_plate, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-                        details.append({
-                            "kind": "plate",
-                            "label": "🔢 Biển số xe (Phóng to)",
-                            "url": f"/{out_plate}",
-                        })
 
         return details
 
@@ -599,7 +611,7 @@ class CameraAIProcessor:
             "-timeout", "8000000",
             "-i", rtsp_url,
             "-an",
-            "-vf", "scale='min(1280,iw)':-2,format=yuvj420p",
+            "-vf", "scale='min(1920,iw)':-2,format=yuvj420p",
             "-fps_mode", "drop",
             "-strict", "unofficial",
             "-f", "image2pipe",
@@ -823,7 +835,7 @@ class CameraAIProcessor:
             lens_jpegs.append((1, jpg_bytes))
         else:
             for idx, crop in enumerate(lenses, start=1):
-                ok_c, buf_c = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                ok_c, buf_c = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                 if ok_c:
                     lens_jpegs.append((idx, buf_c.tobytes()))
 
