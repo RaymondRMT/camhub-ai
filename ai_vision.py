@@ -4,19 +4,38 @@ import math
 import json
 import uuid
 import shutil
+import urllib.request
 import subprocess
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import cv2
 import numpy as np
 
+# Múi giờ Việt Nam (UTC+7) mặc định để khớp thời gian thực tế dù chạy trong Ubuntu proot (UTC)
+VN_TZ = timezone(timedelta(hours=int(os.environ.get("CAMHUB_TZ_OFFSET", "7"))))
+
+
+def now_vn() -> datetime:
+    return datetime.now(VN_TZ)
+
+
 try:
     import mediapipe as mp
-    HAS_MEDIAPIPE = hasattr(mp, "solutions") and hasattr(mp.solutions, "pose")
+    HAS_MP_LEGACY = hasattr(mp, "solutions") and hasattr(mp.solutions, "pose")
+    HAS_MP_TASKS = hasattr(mp, "tasks") and hasattr(mp.tasks, "vision")
 except Exception:
     mp = None
-    HAS_MEDIAPIPE = False
+    HAS_MP_LEGACY = False
+    HAS_MP_TASKS = False
+
+HAS_MEDIAPIPE = HAS_MP_LEGACY or HAS_MP_TASKS
+
+POSE_TASK_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+)
+POSE_TASK_PATH = os.path.join("models", "pose_landmarker_lite.task")
 
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
 
@@ -31,10 +50,53 @@ class CameraAIProcessor:
         self.cam_status = {}
         self.thermal_delay = 0.20  # Mặc định ~5 FPS tiết kiệm pin & giảm nhiệt
         os.makedirs("snapshots", exist_ok=True)
+        os.makedirs("models", exist_ok=True)
 
-        self.mp_pose = mp.solutions.pose if HAS_MEDIAPIPE else None
+        self.mp_pose = mp.solutions.pose if HAS_MP_LEGACY else None
         self.has_ffmpeg_cli = shutil.which("ffmpeg") is not None
+
+        # Bộ nhận diện dáng người đứng OpenCV HOG (dùng khi không có MediaPipe model)
+        self.hog = cv2.HOGDescriptor()
+        self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+        self.active_engine_label = self._resolve_engine_label()
         threading.Thread(target=self._thermal_guard_loop, daemon=True).start()
+        if HAS_MP_TASKS and not HAS_MP_LEGACY and not os.path.exists(POSE_TASK_PATH):
+            threading.Thread(target=self._ensure_pose_task_model, daemon=True).start()
+
+    def _resolve_engine_label(self) -> str:
+        if HAS_MP_LEGACY:
+            return "MediaPipe Pose"
+        if HAS_MP_TASKS and os.path.exists(POSE_TASK_PATH):
+            return "MediaPipe Pose Tasks"
+        return "OpenCV Person + Fall AI"
+
+    def _ensure_pose_task_model(self):
+        try:
+            os.makedirs("models", exist_ok=True)
+            if not os.path.exists(POSE_TASK_PATH):
+                urllib.request.urlretrieve(POSE_TASK_URL, POSE_TASK_PATH)
+            self.active_engine_label = self._resolve_engine_label()
+        except Exception:
+            pass
+
+    def _create_pose_landmarker(self):
+        if not HAS_MP_TASKS or not os.path.exists(POSE_TASK_PATH):
+            return None
+        try:
+            BaseOptions = mp.tasks.BaseOptions
+            PoseLandmarker = mp.tasks.vision.PoseLandmarker
+            PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+            VisionRunningMode = mp.tasks.vision.RunningMode
+            options = PoseLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=POSE_TASK_PATH),
+                running_mode=VisionRunningMode.IMAGE,
+                min_pose_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+            return PoseLandmarker.create_from_options(options)
+        except Exception:
+            return None
 
     def _read_device_temp(self) -> Optional[float]:
         try:
@@ -76,7 +138,7 @@ class CameraAIProcessor:
         with self.frames_lock:
             self.cam_status[cam_id] = {
                 "online": False,
-                "engine": "mediapipe" if HAS_MEDIAPIPE else "contour",
+                "engine": self.active_engine_label,
                 "last_frame_ts": 0.0,
                 "lens_count": 1,
             }
@@ -109,8 +171,8 @@ class CameraAIProcessor:
         with self.frames_lock:
             st = dict(self.cam_status.get(cam_id, {}))
         if not st:
-            return {"online": False, "engine": "mediapipe" if HAS_MEDIAPIPE else "contour", "lens_count": 1}
-        is_recent = (time.time() - st.get("last_frame_ts", 0.0)) < 15.0
+            return {"online": False, "engine": self.active_engine_label, "lens_count": 1}
+        is_recent = (time.time() - st.get("last_frame_ts", 0.0)) < 12.0
         st["online"] = bool(st.get("online") and is_recent)
         st.setdefault("lens_count", 1)
         return st
@@ -133,7 +195,7 @@ class CameraAIProcessor:
         else:
             img = self.build_placeholder_jpeg(
                 f"TEST FALL ALERT - {cam_name}",
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                now_vn().strftime("%Y-%m-%d %H:%M:%S"),
             )
             with open(snap_file, "wb") as f:
                 f.write(img)
@@ -145,18 +207,20 @@ class CameraAIProcessor:
             "cam_name": cam_name,
             "message": f"[THỬ NGHIỆM] KHẨN CẤP: Phát hiện người bị té ngã tại {cam_name}!",
             "snapshot": f"/{snap_file}",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
         }
         self.on_alert(alert_data)
         return alert_data
 
-    def _calculate_body_angle(self, landmarks):
-        l_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-        r_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-        l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
-        r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
+    def _calculate_body_angle_landmarks(self, landmarks) -> float:
+        # Indices MediaPipe Pose chuẩn: 11=L_SHOULDER, 12=R_SHOULDER, 23=L_HIP, 24=R_HIP
+        l_shoulder = landmarks[11]
+        r_shoulder = landmarks[12]
+        l_hip = landmarks[23]
+        r_hip = landmarks[24]
 
-        if min(l_shoulder.visibility, r_shoulder.visibility, l_hip.visibility, r_hip.visibility) < 0.35:
+        vis_vals = [getattr(pt, "visibility", 1.0) for pt in (l_shoulder, r_shoulder, l_hip, r_hip)]
+        if min(vis_vals) < 0.35:
             return 0.0
 
         mid_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2.0
@@ -168,15 +232,33 @@ class CameraAIProcessor:
         dy = abs(mid_shoulder_y - mid_hip_y) + 1e-6
         return math.degrees(math.atan2(dx, dy))
 
-    def _detect_horizontal_posture_fallback(self, fg_mask) -> bool:
-        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    def _detect_fall_opencv_smart(self, small_bgr: np.ndarray, fg_clean: np.ndarray, st: dict, now: float) -> bool:
+        """
+        Phát hiện té ngã thông minh bằng OpenCV khi chưa có MediaPipe:
+        Chỉ báo té ngã khi từng ghi nhận dáng đứng/người (hoặc sụp độ cao đột ngột) rồi chuyển sang nằm ngang bất động.
+        Tránh báo giả khi xe máy / vật thể dài chạy ngang qua sân.
+        """
+        contours, _ = cv2.findContours(fg_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return False
         largest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest) < 3200:
+        area = cv2.contourArea(largest)
+        if area < 2400:
             return False
-        _, _, w, h = cv2.boundingRect(largest)
-        return (w / float(h + 1e-6)) > 1.35
+        _, y, w, h = cv2.boundingRect(largest)
+        aspect = w / float(h + 1e-6)
+
+        # Ghi nhận trạng thái dáng đứng trước đó (h > w * 1.15 hoặc phát hiện người bằng HOG)
+        if h > w * 1.15:
+            st["last_upright_ts"] = now
+            return False
+
+        # Chỉ xem là nghi ngờ té ngã nếu nằm ngang (w/h > 1.38) VÀ trong vòng 8 giây trước có dáng đứng hoặc thay đổi chiều cao đột ngột
+        had_upright = (now - st.get("last_upright_ts", 0.0)) <= 8.0
+        prev_h = st.get("prev_bbox_h", h)
+        st["prev_bbox_h"] = h
+        sudden_drop = (prev_h > 45) and (h < prev_h * 0.65)
+        return (aspect > 1.38) and (had_upright or sudden_drop)
 
     def _detect_lens_count(self, frame: np.ndarray) -> int:
         h, w = frame.shape[:2]
@@ -184,9 +266,9 @@ class CameraAIProcessor:
             return 1
         ratio = h / float(w)
         if ratio >= 1.55:
-            return 3  # Camera 3 mắt ghép dọc (VD: 1920x3240)
+            return 3
         if ratio >= 1.05:
-            return 2  # Camera 2 mắt ghép dọc (VD: 1920x2160)
+            return 2
         return 1
 
     def _split_lenses(self, frame: np.ndarray, lens_count: int) -> list:
@@ -197,7 +279,6 @@ class CameraAIProcessor:
         return [frame[i * step : (i + 1) * step if i < lens_count - 1 else h] for i in range(lens_count)]
 
     def _spawn_ffmpeg_mjpeg(self, rtsp_url: str, transport: str):
-        """Giải mã RTSP giữ nguyên tỉ lệ khung hình (640:-2), -nostdin & -fps_mode drop xử lý DTS lỗi."""
         cmd = [
             "ffmpeg",
             "-nostdin",
@@ -230,6 +311,22 @@ class CameraAIProcessor:
     def _iter_ffmpeg_jpegs(self, rtsp_url: str, transport: str, stop_event: threading.Event):
         proc = self._spawn_ffmpeg_mjpeg(rtsp_url, transport)
         buf = bytearray()
+        last_data_ts = [time.time()]
+
+        # Watchdog: tự ngắt nếu ffmpeg bị treo không trả frame quá 12 giây
+        def _watchdog():
+            while not stop_event.is_set() and proc.poll() is None:
+                if time.time() - last_data_ts[0] > 12.0:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    break
+                if stop_event.wait(2.0):
+                    break
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+
         try:
             while not stop_event.is_set():
                 if not proc.stdout:
@@ -237,6 +334,7 @@ class CameraAIProcessor:
                 chunk = proc.stdout.read(8192)
                 if not chunk:
                     break
+                last_data_ts[0] = time.time()
                 buf.extend(chunk)
                 while True:
                     start = buf.find(b"\xff\xd8")
@@ -271,6 +369,7 @@ class CameraAIProcessor:
         lens_idx: int,
         lens_states: dict,
         local_pose,
+        task_landmarker,
         now: float,
     ):
         if lens_idx not in lens_states:
@@ -280,6 +379,8 @@ class CameraAIProcessor:
                 "last_motion_alert": 0.0,
                 "last_fall_alert": 0.0,
                 "horizontal_start_time": None,
+                "last_upright_ts": 0.0,
+                "prev_bbox_h": 0,
             }
         st = lens_states[lens_idx]
         st["frames_seen"] += 1
@@ -288,7 +389,6 @@ class CameraAIProcessor:
         h_start = st["horizontal_start_time"]
         lr = 0.0 if (h_start is not None and (now - h_start) < 10.0) else -1.0
         fg_mask = st["bg"].apply(small, learningRate=lr)
-        # Bỏ qua 6 khung hình đầu để MOG2 ổn định nền; lọc nhiễu hạt nhỏ rồi mới đếm vùng chuyển động
         if st["frames_seen"] <= 6:
             return
         fg_clean = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
@@ -306,7 +406,7 @@ class CameraAIProcessor:
                 "cam_name": label_name,
                 "message": f"Phát hiện chuyển động tại {label_name}",
                 "snapshot": f"/{snap_file}",
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
             })
             st["last_motion_alert"] = now
 
@@ -316,10 +416,20 @@ class CameraAIProcessor:
                 rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
                 results = local_pose.process(rgb)
                 if results and results.pose_landmarks:
-                    angle = self._calculate_body_angle(results.pose_landmarks.landmark)
+                    angle = self._calculate_body_angle_landmarks(results.pose_landmarks.landmark)
                     is_horizontal = angle > 58.0
+            elif task_landmarker is not None:
+                try:
+                    rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    res = task_landmarker.detect(mp_image)
+                    if res and res.pose_landmarks and len(res.pose_landmarks) > 0:
+                        angle = self._calculate_body_angle_landmarks(res.pose_landmarks[0])
+                        is_horizontal = angle > 58.0
+                except Exception:
+                    is_horizontal = self._detect_fall_opencv_smart(small, fg_clean, st, now)
             else:
-                is_horizontal = self._detect_horizontal_posture_fallback(fg_clean)
+                is_horizontal = self._detect_fall_opencv_smart(small, fg_clean, st, now)
 
             if is_horizontal:
                 if st["horizontal_start_time"] is None:
@@ -336,7 +446,7 @@ class CameraAIProcessor:
                         "cam_name": label_name,
                         "message": f"KHẨN CẤP: Phát hiện người bị té ngã tại {label_name}!",
                         "snapshot": f"/{snap_file}",
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     st["last_fall_alert"] = now
                     st["horizontal_start_time"] = None
@@ -350,6 +460,7 @@ class CameraAIProcessor:
         jpg_bytes: bytes,
         lens_states: dict,
         local_pose,
+        task_landmarker,
         state: dict,
     ):
         now = time.time()
@@ -370,13 +481,20 @@ class CameraAIProcessor:
                 if ok_c:
                     lens_jpegs.append((idx, buf_c.tobytes()))
 
+        engine_name = (
+            "MediaPipe Pose"
+            if local_pose is not None
+            else ("MediaPipe Pose Tasks" if task_landmarker is not None else "OpenCV Person + Fall AI")
+        )
+        self.active_engine_label = engine_name
+
         with self.frames_lock:
             self.frames[(cam_id, 0)] = jpg_bytes
             for idx, l_jpg in lens_jpegs:
                 self.frames[(cam_id, idx)] = l_jpg
             self.cam_status[cam_id] = {
                 "online": True,
-                "engine": "mediapipe" if local_pose is not None else "contour",
+                "engine": engine_name,
                 "last_frame_ts": now,
                 "lens_count": lens_count,
             }
@@ -388,11 +506,14 @@ class CameraAIProcessor:
         for idx, crop in enumerate(lenses, start=1):
             l_jpg = dict(lens_jpegs).get(idx, jpg_bytes)
             label = f"{cam_name} (Mắt {idx})" if lens_count > 1 else cam_name
-            self._run_ai_on_lens(cam_id, label, crop, l_jpg, idx, lens_states, local_pose, now)
+            self._run_ai_on_lens(
+                cam_id, label, crop, l_jpg, idx, lens_states, local_pose, task_landmarker, now
+            )
 
     def _process_loop(self, cam_id: str, cam_name: str, rtsp_url: str, stop_event: threading.Event):
         local_pose = None
-        if HAS_MEDIAPIPE and self.mp_pose is not None:
+        task_landmarker = None
+        if HAS_MP_LEGACY and self.mp_pose is not None:
             try:
                 local_pose = self.mp_pose.Pose(
                     static_image_mode=False,
@@ -402,6 +523,8 @@ class CameraAIProcessor:
                 )
             except Exception:
                 local_pose = None
+        elif HAS_MP_TASKS:
+            task_landmarker = self._create_pose_landmarker()
 
         lens_states = {}
         state = {"last_ai_ts": 0.0}
@@ -417,17 +540,23 @@ class CameraAIProcessor:
             (rtsp_url, "tcp"),
         ]
         src_idx = 0
-        retry_delay = 4.0
+        retry_delay = 3.0
 
         try:
             while not stop_event.is_set():
+                # Nếu model PoseLandmarker vừa tải xong ở nền, nạp ngay vào luồng
+                if local_pose is None and task_landmarker is None and HAS_MP_TASKS and os.path.exists(POSE_TASK_PATH):
+                    task_landmarker = self._create_pose_landmarker()
+
                 got_frame = False
                 if self.has_ffmpeg_cli:
                     src_url, transport = sources[src_idx % len(sources)]
                     for jpg in self._iter_ffmpeg_jpegs(src_url, transport, stop_event):
                         got_frame = True
-                        retry_delay = 4.0
-                        self._analyze_frame(cam_id, cam_name, jpg, lens_states, local_pose, state)
+                        retry_delay = 3.0
+                        self._analyze_frame(
+                            cam_id, cam_name, jpg, lens_states, local_pose, task_landmarker, state
+                        )
                     if not got_frame:
                         src_idx += 1
                 else:
@@ -439,13 +568,15 @@ class CameraAIProcessor:
                             if not ret or frame is None:
                                 break
                             got_frame = True
-                            retry_delay = 5.0
+                            retry_delay = 3.0
                             h, w = frame.shape[:2]
                             target_h = max(2, int(round(640 * (h / float(max(1, w))))) & ~1)
                             preview = cv2.resize(frame, (640, target_h))
                             ok, buf = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
                             if ok:
-                                self._analyze_frame(cam_id, cam_name, buf.tobytes(), lens_states, local_pose, state)
+                                self._analyze_frame(
+                                    cam_id, cam_name, buf.tobytes(), lens_states, local_pose, task_landmarker, state
+                                )
                             if stop_event.wait(self.thermal_delay):
                                 break
                     finally:
@@ -457,10 +588,15 @@ class CameraAIProcessor:
 
                 if stop_event.wait(retry_delay):
                     break
-                retry_delay = min(15.0, retry_delay + 3.0)
+                retry_delay = min(10.0, retry_delay + 2.0)
         finally:
             if local_pose is not None:
                 try:
                     local_pose.close()
+                except Exception:
+                    pass
+            if task_landmarker is not None:
+                try:
+                    task_landmarker.close()
                 except Exception:
                     pass
