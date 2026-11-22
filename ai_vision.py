@@ -208,7 +208,7 @@ class CameraAIProcessor:
             "-analyzeduration", "2000000",
             "-probesize", "2000000",
             "-rtsp_transport", transport,
-            "-rw_timeout", "8000000",
+            "-timeout", "8000000",
             "-i", rtsp_url,
             "-an",
             "-vf", "fps=6,scale=640:-2,format=yuvj420p",
