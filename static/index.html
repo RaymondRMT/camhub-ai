@@ -470,6 +470,8 @@
           <span class="pill" id="aiEnginePill">AI: --</span>
           <span class="pill" id="navStoragePill">Trống: -- GB</span>
           <span class="pill" id="deviceThermalPill">Pin: --% • --°C</span>
+          <span class="pill" id="cpuRamPill">CPU: --% • RAM: --%</span>
+          <span class="pill" id="gpuPill">GPU: --</span>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
           <button class="btn sm" onclick="toggleTheme()" title="Đổi chế độ Sáng / Tối">
@@ -526,8 +528,17 @@
               </div>
             </div>
           </div>
-          <div class="card" style="padding:16px; max-height:540px; overflow-y:auto;">
-            <h3 style="font-size:0.98rem; margin-bottom:10px;">Bản ghi đã lưu</h3>
+          <div class="card" style="padding:16px; max-height:560px; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+              <h3 style="font-size:0.98rem;">Bản ghi đã lưu</h3>
+              <button class="btn sm" onclick="loadRecordings()">Làm mới</button>
+            </div>
+            <div class="tab-bar" style="flex-wrap:wrap;">
+              <button class="tab-btn active" onclick="setRecFilter('all', this)">Tất cả</button>
+              <button class="tab-btn" onclick="setRecFilter('continuous', this)">Video dài</button>
+              <button class="tab-btn" onclick="setRecFilter('motion', this)">Chuyển động</button>
+              <button class="tab-btn" onclick="setRecFilter('fall', this)">Té ngã</button>
+            </div>
             <div id="recordingList" style="display:flex; flex-direction:column; gap:8px;"></div>
           </div>
         </div>
@@ -829,6 +840,8 @@
     let camerasCache = [];
     let alertsCache = [];
     let currentAlertFilter = "all";
+    let recordingsCache = [];
+    let currentRecFilter = "all";
     let camAddMode = "auto";
 
     // Trạng thái Modal Phóng to & PTZ
@@ -1685,14 +1698,39 @@
     }
 
     // --- PLAYBACK, STORAGE, WIFI, ALERTS, TELEGRAM, SECURITY ---
+    function setRecFilter(cat, btn) {
+      currentRecFilter = cat;
+      btn.parentElement.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderRecordings();
+    }
+
+    function renderRecordings() {
+      const filtered = currentRecFilter === "all" ? recordingsCache : recordingsCache.filter(r => r.category === currentRecFilter);
+      const colors = {
+        fall: { border: "var(--danger)", bg: "var(--danger-soft)", text: "var(--danger)" },
+        motion: { border: "var(--warning)", bg: "var(--warning-soft)", text: "var(--warning)" },
+        continuous: { border: "var(--accent)", bg: "var(--accent-soft)", text: "var(--accent)" }
+      };
+      document.getElementById("recordingList").innerHTML = filtered.map(r => {
+        const c = colors[r.category] || colors.continuous;
+        return `
+        <button class="btn sm" style="justify-content:space-between; width:100%; border-left:4px solid ${c.border}; padding:9px 11px;" onclick="playRecording('${escapeHtml(r.url)}')">
+          <span style="display:flex; flex-direction:column; align-items:flex-start; gap:2px;">
+            <span style="font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:999px; background:${c.bg}; color:${c.text};">${escapeHtml(r.label || "Video")}</span>
+            <span>${escapeHtml(r.created_at)}</span>
+          </span>
+          <span style="color:var(--text-muted);">${Number(r.size_mb)} MB</span>
+        </button>`;
+      }).join("") || `<p style="font-size:0.84rem; color:var(--text-muted);">Chưa có video ghi hình trong mục này.</p>`;
+    }
+
     async function loadRecordings() {
       const res = await apiFetch("/api/recordings", { headers: getAuthHeaders() });
       if (!res.ok) return;
       const data = await res.json();
-      document.getElementById("recordingList").innerHTML = data.recordings.map(r => `
-        <button class="btn sm" style="justify-content:space-between; width:100%;" onclick="playRecording('${escapeHtml(r.url)}')">
-          <span>${escapeHtml(r.created_at)}</span><span style="color:var(--text-muted);">${Number(r.size_mb)} MB</span>
-        </button>`).join("") || `<p style="font-size:0.84rem; color:var(--text-muted);">Chưa có video ghi hình.</p>`;
+      recordingsCache = data.recordings || [];
+      renderRecordings();
     }
 
     function playRecording(url) { const v = document.getElementById("playbackVideo"); v.src = url; v.play().catch(() => {}); }
@@ -1718,6 +1756,10 @@
       const h = await res.json();
       document.getElementById("deviceThermalPill").innerText = `Pin: ${h.battery_pct}% • ${h.temperature}°C`;
       document.getElementById("aiEnginePill").innerText = `AI: ${h.ai_engine || "OpenCV"}`;
+      const cpuEl = document.getElementById("cpuRamPill");
+      if (cpuEl) cpuEl.innerText = `CPU: ${h.cpu_pct ?? 0}% (${h.cpu_cores || 1} nhân) • RAM: ${h.ram_pct ?? 0}%`;
+      const gpuEl = document.getElementById("gpuPill");
+      if (gpuEl) gpuEl.innerText = h.gpu_pct !== null && h.gpu_pct !== undefined ? `GPU: ${h.gpu_pct}% (${h.gpu_name || "SoC"})` : `GPU: ${h.gpu_name || "ARM SoC"}`;
     }
 
     async function loadStorage() {
