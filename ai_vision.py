@@ -203,7 +203,7 @@ class CameraAIProcessor:
             "-hide_banner",
             "-loglevel", "error",
             "-rtsp_transport", transport,
-            "-rw_timeout", "3000000",
+            "-rw_timeout", "6000000",
             "-i", rtsp_url,
             "-vf", "scale=640:-2",
             "-r", "6",
@@ -397,21 +397,26 @@ class CameraAIProcessor:
 
         lens_states = {}
         state = {"last_ai_ts": 0.0}
-        transports = ["tcp", "udp"]
-        t_idx = 0
-        retry_delay = 5.0
+        local_mtx_url = f"rtsp://127.0.0.1:8554/{cam_id}"
+        sources = [
+            (local_mtx_url, "tcp"),
+            (rtsp_url, "udp"),
+            (rtsp_url, "tcp"),
+        ]
+        src_idx = 0
+        retry_delay = 4.0
 
         try:
             while not stop_event.is_set():
                 got_frame = False
                 if self.has_ffmpeg_cli:
-                    transport = transports[t_idx % len(transports)]
-                    for jpg in self._iter_ffmpeg_jpegs(rtsp_url, transport, stop_event):
+                    src_url, transport = sources[src_idx % len(sources)]
+                    for jpg in self._iter_ffmpeg_jpegs(src_url, transport, stop_event):
                         got_frame = True
-                        retry_delay = 5.0
+                        retry_delay = 4.0
                         self._analyze_frame(cam_id, cam_name, jpg, lens_states, local_pose, state)
                     if not got_frame:
-                        t_idx += 1
+                        src_idx += 1
                 else:
                     cap = cv2.VideoCapture(rtsp_url)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
