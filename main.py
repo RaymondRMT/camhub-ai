@@ -309,23 +309,54 @@ def send_telegram_alert(alert_data: dict):
     link_line = f"\n🔗 Xem trực tiếp: {remote_url}" if remote_url.startswith("http") else ""
     caption = f"{prefix}\n{alert_data['message']}\n🕒 Thời gian: {alert_data['timestamp']}{link_line}"
 
+    details = alert_data.get("detail_snapshots") or []
+
     def _worker():
-        has_photo = bool(snap_rel and os.path.exists(snap_rel))
-        photo_bytes = None
-        if has_photo:
+        media_items = []
+        if snap_rel and os.path.exists(snap_rel):
             try:
                 with open(snap_rel, "rb") as f:
-                    photo_bytes = f.read()
+                    media_items.append(("overview.jpg", f.read(), caption))
             except OSError:
-                photo_bytes = None
+                pass
+
+        for idx, d in enumerate(details[:4], start=1):
+            d_rel = str(d.get("url", "")).lstrip("/")
+            if d_rel and os.path.exists(d_rel):
+                try:
+                    with open(d_rel, "rb") as f:
+                        media_items.append((f"detail_{idx}.jpg", f.read(), d.get("label", "Chi tiết phóng to")))
+                except OSError:
+                    continue
 
         for cid in chat_ids:
             try:
-                if photo_bytes:
+                if len(media_items) >= 2:
+                    tg_media = []
+                    files_payload = {}
+                    for i, (fname, raw_b, item_cap) in enumerate(media_items):
+                        attach_key = f"photo_{i}"
+                        entry = {"type": "photo", "media": f"attach://{attach_key}"}
+                        if i == 0:
+                            entry["caption"] = item_cap
+                        else:
+                            entry["caption"] = item_cap
+                        tg_media.append(entry)
+                        files_payload[attach_key] = (fname, raw_b, "image/jpeg")
+                    resp = httpx.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMediaGroup",
+                        data={"chat_id": cid, "media": json.dumps(tg_media, ensure_ascii=False)},
+                        files=files_payload,
+                        timeout=18.0,
+                    )
+                    if resp.status_code == 200:
+                        continue
+                if len(media_items) >= 1:
+                    fname, raw_b, _ = media_items[0]
                     httpx.post(
                         f"https://api.telegram.org/bot{bot_token}/sendPhoto",
                         data={"chat_id": cid, "caption": caption},
-                        files={"photo": ("alert.jpg", photo_bytes, "image/jpeg")},
+                        files={"photo": (fname, raw_b, "image/jpeg")},
                         timeout=12.0,
                     )
                 else:
