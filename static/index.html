@@ -1857,6 +1857,7 @@
           <span style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(a.timestamp)}</span>
           <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
             <button class="btn sm ${a.feedback === 'true' ? 'success' : ''}" onclick="sendAlertFeedback('${escapeHtml(a.id)}', 'true')">👍 Chính xác</button>
+            ${(a.detail_snapshots && a.detail_snapshots.some(d => d.kind === 'plate')) ? `<button class="btn sm ${a.feedback === 'plate_wrong' ? 'danger' : ''}" onclick="sendAlertFeedback('${escapeHtml(a.id)}', 'plate_wrong')">🔢 Sai biển số</button>` : ""}
             <button class="btn sm ${a.feedback === 'false' ? 'danger' : ''}" onclick="sendAlertFeedback('${escapeHtml(a.id)}', 'false')">👎 Báo nhầm</button>
           </div>
         </div>`).join("") || `<p style="font-size:0.85rem; color:var(--text-muted);">Chưa có cảnh báo nào trong mục này.</p>`;
@@ -1892,7 +1893,7 @@
         body: JSON.stringify({ verdict })
       });
       if (res.ok) {
-        showToast(verdict === "true" ? "AI đã ghi nhận khung hình chuẩn để ưu tiên lần sau!" : "AI đã ghi nhớ vùng báo nhầm để lọc bỏ lần sau!", "success");
+        showToast(verdict === "true" ? "AI đã ghi nhận khung hình chuẩn!" : (verdict === "plate_wrong" ? "AI đã học tránh vùng bánh xe/phụ tùng khi dò biển số!" : "AI đã ghi nhớ vùng báo nhầm để lọc bỏ lần sau!"), "success");
         loadAlerts();
       }
     }
