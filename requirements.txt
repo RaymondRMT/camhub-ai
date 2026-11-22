@@ -9,5 +9,6 @@ python-multipart>=0.0.12
 onvif-zeep>=0.2.12
 opencv-python-headless>=4.10.0.84
 numpy>=1.26.4
+pillow>=10.0.0
 # Tùy chọn AI Pose nâng cao (tự động cài trên Ubuntu ARM64/x86_64)
 # mediapipe>=0.10.14
