@@ -1139,7 +1139,7 @@
             <video id="vid_${domKey}" autoplay muted playsinline></video>
             <img id="mjpeg_${domKey}" class="mjpeg-stream" style="display:none;" alt="${escapeHtml(t.title)}" />
             <div class="cam-overlay-top">
-              <span class="cam-badge"><span class="dot ${c.online ? 'pulse' : ''}" style="background:${c.online ? '#10b981' : '#f59e0b'}"></span> ${escapeHtml(t.title)}</span>
+              <span class="cam-badge"><span class="dot ${c.online ? 'pulse' : ''}" data-cam-dot="${safeId}" style="background:${c.online ? '#10b981' : '#f59e0b'}"></span> ${escapeHtml(t.title)}</span>
               <span class="cam-badge">AI Té ngã</span>
             </div>
             <button class="cam-zoom-hint" onclick="event.stopPropagation(); openCameraFocus('${safeId}', ${t.lens})">Phóng to & PTZ</button>
@@ -1768,6 +1768,30 @@
         </div>`).join("");
     }
 
+    async function pollCameraStatus() {
+      try {
+        const res = await apiFetch("/api/cameras", { headers: getAuthHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        const latest = data.cameras || [];
+        const changedLayout = latest.length !== camerasCache.length || latest.some((c, i) => {
+          const prev = camerasCache[i];
+          return !prev || prev.id !== c.id || Number(prev.lens_count || 1) !== Number(c.lens_count || 1);
+        });
+        if (changedLayout) {
+          loadCameras();
+        } else {
+          camerasCache = latest;
+          latest.forEach(c => {
+            document.querySelectorAll(`[data-cam-dot="${c.id}"]`).forEach(dot => {
+              dot.style.background = c.online ? "#10b981" : "#f59e0b";
+              dot.classList.toggle("pulse", !!c.online);
+            });
+          });
+        }
+      } catch (_) {}
+    }
+
     function initDashboard() {
       pollTimers.forEach(t => clearInterval(t));
       pollTimers = [];
@@ -1776,6 +1800,7 @@
       loadAlerts();
       loadDeviceHealth();
       if (getCurrentRole() === "admin") { loadTunnelInfo(); loadSetupChecklist(); }
+      pollTimers.push(setInterval(pollCameraStatus, 8000));
       pollTimers.push(setInterval(loadStorage, 30000));
       pollTimers.push(setInterval(loadAlerts, 5000));
       pollTimers.push(setInterval(loadDeviceHealth, 25000));
