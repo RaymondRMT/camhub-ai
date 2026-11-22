@@ -901,12 +901,12 @@ class CameraAIProcessor:
             "-timeout", "8000000",
             "-i", rtsp_url,
             "-an",
-            "-vf", "scale='min(1920,iw)':-2,format=yuvj420p",
+            "-vf", "select='not(mod(n,4))',scale='min(1920,iw)':-2,format=yuvj420p",
             "-fps_mode", "drop",
             "-strict", "unofficial",
             "-f", "image2pipe",
             "-vcodec", "mjpeg",
-            "-q:v", "3",
+            "-q:v", "4",
             "-",
         ]
         return subprocess.Popen(
@@ -940,7 +940,7 @@ class CameraAIProcessor:
             while not stop_event.is_set():
                 if not proc.stdout:
                     break
-                chunk = proc.stdout.read(8192)
+                chunk = os.read(proc.stdout.fileno(), 262144)
                 if not chunk:
                     break
                 last_data_ts[0] = time.time()
@@ -1150,9 +1150,6 @@ class CameraAIProcessor:
         state: dict,
     ):
         now = time.time()
-        # Giữ nhịp tối đa ~5 FPS ở Python thay vì để ffmpeg lặp khung hình cũ
-        if now - state.get("last_decode_ts", 0.0) < 0.25:
-            return
         state["last_decode_ts"] = now
 
         arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
