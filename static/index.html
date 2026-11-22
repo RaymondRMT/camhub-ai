@@ -563,6 +563,10 @@
               <button class="btn sm danger admin-only" onclick="triggerTestFall()">Thử cảnh báo té ngã</button>
             </div>
           </div>
+          <div style="padding:10px 13px; border-radius:12px; background:var(--surface-subtle); border:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; font-size:0.82rem;">
+            <span id="aiLearnSummaryText">AI Tự học theo phản hồi: Chưa có mẫu huấn luyện.</span>
+            <button class="btn sm admin-only" onclick="resetAiLearning()">Đặt lại bộ nhớ học</button>
+          </div>
           <div id="alertsContainer" class="cam-grid"></div>
         </div>
       </section>
@@ -1851,6 +1855,10 @@
             </div>` : ""}
           <strong style="font-size:0.9rem;">${escapeHtml(a.message)}</strong>
           <span style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(a.timestamp)}</span>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+            <button class="btn sm ${a.feedback === 'true' ? 'success' : ''}" onclick="sendAlertFeedback('${escapeHtml(a.id)}', 'true')">👍 Chính xác</button>
+            <button class="btn sm ${a.feedback === 'false' ? 'danger' : ''}" onclick="sendAlertFeedback('${escapeHtml(a.id)}', 'false')">👎 Báo nhầm</button>
+          </div>
         </div>`).join("") || `<p style="font-size:0.85rem; color:var(--text-muted);">Chưa có cảnh báo nào trong mục này.</p>`;
     }
 
@@ -1859,6 +1867,11 @@
       if (!res.ok) return;
       const data = await res.json();
       alertsCache = data.alerts || [];
+      if (data.learning) {
+        const l = data.learning;
+        const el = document.getElementById("aiLearnSummaryText");
+        if (el) el.innerText = `AI Tự học theo phản hồi: ${l.total_true} mẫu đúng • ${l.total_false} báo nhầm • Đã chặn ${l.zones_blocked} vùng báo giả`;
+      }
       renderAlerts();
       if (alertsCache.length > 0) {
         const latest = alertsCache[0];
@@ -1869,6 +1882,25 @@
         lastAlertId = latestKey;
       }
       isInitialAlertFetch = false;
+    }
+
+
+    async function sendAlertFeedback(alertId, verdict) {
+      const res = await apiFetch(`/api/alerts/${encodeURIComponent(alertId)}/feedback`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ verdict })
+      });
+      if (res.ok) {
+        showToast(verdict === "true" ? "AI đã ghi nhận khung hình chuẩn để ưu tiên lần sau!" : "AI đã ghi nhớ vùng báo nhầm để lọc bỏ lần sau!", "success");
+        loadAlerts();
+      }
+    }
+
+    async function resetAiLearning() {
+      if (!confirm("Đặt lại toàn bộ dữ liệu AI đã học từ phản hồi?")) return;
+      const res = await apiFetch("/api/ai/learning", { method: "DELETE", headers: getAuthHeaders() });
+      if (res.ok) { showToast("Đã đặt lại bộ nhớ học của AI.", "info"); loadAlerts(); }
     }
 
     async function triggerTestFall() {
