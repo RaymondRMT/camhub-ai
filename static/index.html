@@ -340,6 +340,7 @@
         </div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
           <div id="focusLensTabs" class="tab-bar" style="display:none;"></div>
+          <button class="btn sm" id="focusRotateBtn" onclick="cycleCameraRotation(focusedCamId)">Xoay: 0°</button>
           <button class="btn sm" onclick="captureFocusedSnapshot()">Chụp ảnh</button>
           <button class="btn sm" onclick="toggleFocusFullscreen()">Toàn màn hình</button>
           <button class="btn sm danger" onclick="closeCameraFocus()">Đóng (ESC)</button>
@@ -1231,8 +1232,8 @@
         return `
         <div class="card cam-card">
           <div class="video-box" id="box_${domKey}" ondblclick="openCameraFocus('${safeId}', ${t.lens})">
-            <video id="vid_${domKey}" autoplay muted playsinline></video>
-            <img id="mjpeg_${domKey}" class="mjpeg-stream" style="display:none;" alt="${escapeHtml(t.title)}" />
+            <video id="vid_${domKey}" data-cam-media="${safeId}" style="transform:rotate(${getCamRotation(c.id)}deg);" autoplay muted playsinline></video>
+            <img id="mjpeg_${domKey}" data-cam-media="${safeId}" class="mjpeg-stream" style="display:none; transform:rotate(${getCamRotation(c.id)}deg);" alt="${escapeHtml(t.title)}" />
             <div class="cam-overlay-top">
               <span class="cam-badge"><span class="dot ${c.online ? 'pulse' : ''}" data-cam-dot="${safeId}" style="background:${c.online ? '#10b981' : '#f59e0b'}"></span> ${escapeHtml(t.title)}</span>
               <span class="cam-badge">AI Té ngã</span>
@@ -1276,6 +1277,9 @@
       const lensTotal = Number(cam.lens_count) || 1;
       document.getElementById("focusCamTitle").innerText = focusedLensIndex > 0 ? `${cam.name} — Mắt ${focusedLensIndex}` : cam.name;
       document.getElementById("focusCamMeta").innerText = `${cam.brand.toUpperCase()} • ${cam.ip}`;
+      const curRot = getCamRotation(camId);
+      const rBtn = document.getElementById("focusRotateBtn");
+      if (rBtn) rBtn.innerText = `Xoay: ${curRot}°`;
       document.getElementById("focusPtzStatus").innerText = "Sẵn sàng xoay PTZ & thu phóng.";
 
       const tabs = document.getElementById("focusLensTabs");
@@ -1321,9 +1325,26 @@
       m.src = "";
     }
 
+    function getCamRotation(camId) {
+      return Number(localStorage.getItem("camhub_rot_" + camId) || "0") % 360;
+    }
+
+    function cycleCameraRotation(camId) {
+      if (!camId) return;
+      const next = (getCamRotation(camId) + 90) % 360;
+      localStorage.setItem("camhub_rot_" + camId, String(next));
+      const btn = document.getElementById("focusRotateBtn");
+      if (btn) btn.innerText = `Xoay: ${next}°`;
+      applyDigitalTransform();
+      document.querySelectorAll(`[data-cam-media="${camId}"]`).forEach(el => {
+        el.style.transform = next ? `rotate(${next}deg)` : "";
+      });
+    }
+
     function applyDigitalTransform() {
       const wrap = document.getElementById("focusMediaWrap");
-      wrap.style.transform = `translate(${panX}px, ${panY}px) scale(${digitalZoom})`;
+      const rot = focusedCamId ? getCamRotation(focusedCamId) : 0;
+      wrap.style.transform = `translate(${panX}px, ${panY}px) scale(${digitalZoom})${rot ? ` rotate(${rot}deg)` : ""}`;
       document.getElementById("focusZoomBadge").innerText = `Thu phóng: ${digitalZoom.toFixed(2).replace(/\.00$/, ".0")}x`;
       document.getElementById("digitalZoomSlider").value = digitalZoom;
     }
