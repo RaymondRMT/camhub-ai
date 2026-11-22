@@ -44,13 +44,12 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stime
 
 
 class FaceAndPlateEnhancer:
-    """Nhận diện Gương mặt/Đầu (kể cả đeo khẩu trang, đội nón) & Biển số xe, phóng to + làm nét AI."""
+    """Nhận diện & phóng to có chọn lọc trên đối tượng ĐANG CHUYỂN ĐỘNG: Người (từ vai lên) & Xe + Biển số."""
 
     def __init__(self):
         data_dir = getattr(getattr(cv2, "data", None), "haarcascades", "")
         self.face_frontal = self._load_cascade(data_dir, "haarcascade_frontalface_alt2.xml")
         self.face_profile = self._load_cascade(data_dir, "haarcascade_profileface.xml")
-        self.upper_body = self._load_cascade(data_dir, "haarcascade_upperbody.xml")
         self.plate_cascade = self._load_cascade(data_dir, "haarcascade_russian_plate_number.xml")
 
     @staticmethod
@@ -64,167 +63,141 @@ class FaceAndPlateEnhancer:
         return None
 
     @staticmethod
-    def enhance_zoom_crop(crop: np.ndarray, min_width: int = 420) -> np.ndarray:
-        """Phóng to thông minh LANCZOS4 + khử nhiễu giữ biên + cân bằng tương phản CLAHE + làm nét Unsharp."""
+    def enhance_zoom_crop(crop: np.ndarray, min_width: int = 380) -> np.ndarray:
+        """Phóng to LANCZOS4 + cân bằng sáng nhẹ + làm nét tự nhiên, không gây bệt màu."""
         if crop is None or crop.size == 0:
             return crop
         h, w = crop.shape[:2]
         if w < min_width:
             scale = min_width / float(max(1, w))
-            new_w = max(2, int(round(w * scale)))
-            new_h = max(2, int(round(h * scale)))
-            crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+            crop = cv2.resize(crop, (max(2, int(round(w * scale))), max(2, int(round(h * scale)))), interpolation=cv2.INTER_LANCZOS4)
 
-        # Khử nhiễu nén JPEG nhưng giữ nguyên cạnh chữ/mắt
-        denoised = cv2.bilateralFilter(crop, d=5, sigmaColor=42, sigmaSpace=42)
-
-        # Cân bằng sáng cục bộ (hữu ích khi đội nón bị tối mặt hoặc biển số chói nắng)
-        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
         l_ch, a_ch, b_ch = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(4, 4))
+        clahe = cv2.createCLAHE(clipLimit=1.6, tileGridSize=(4, 4))
         l_eq = clahe.apply(l_ch)
         balanced = cv2.cvtColor(cv2.merge((l_eq, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
 
-        # Unsharp Mask làm nét chi tiết nhỏ
-        blur = cv2.GaussianBlur(balanced, (0, 0), sigmaX=1.35)
-        sharpened = cv2.addWeighted(balanced, 1.55, blur, -0.55, 0)
-        return sharpened
+        blur = cv2.GaussianBlur(balanced, (0, 0), sigmaX=1.1)
+        return cv2.addWeighted(balanced, 1.28, blur, -0.28, 0)
 
     @staticmethod
-    def _expand_box(x: int, y: int, w: int, h: int, img_w: int, img_h: int, pad: float = 0.28):
-        dx = int(w * pad)
-        dy = int(h * pad)
-        x1 = max(0, x - dx)
-        y1 = max(0, y - dy)
-        x2 = min(img_w, x + w + dx)
-        y2 = min(img_h, y + h + dy)
-        return x1, y1, x2, y2
+    def _clamp_box(x1: int, y1: int, x2: int, y2: int, img_w: int, img_h: int):
+        return max(0, x1), max(0, y1), min(img_w, x2), min(img_h, y2)
 
     @staticmethod
-    def _iou(box_a, box_b) -> float:
-        ax1, ay1, ax2, ay2 = box_a
-        bx1, by1, bx2, by2 = box_b
-        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-        if ix2 <= ix1 or iy2 <= iy1:
-            return 0.0
-        inter = (ix2 - ix1) * (iy2 - iy1)
-        area = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
-        return inter / float(max(1, area))
+    def _is_green_foliage(crop: np.ndarray) -> bool:
+        if crop is None or crop.size == 0:
+            return True
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        green_mask = cv2.inRange(hsv, (32, 35, 30), (92, 255, 255))
+        return (cv2.countNonZero(green_mask) / float(crop.shape[0] * crop.shape[1])) > 0.35
 
-    def _dedup_boxes(self, boxes: list, limit: int = 2) -> list:
-        out = []
-        for b in boxes:
-            if all(self._iou(b, prev) < 0.35 for prev in out):
-                out.append(b)
-                if len(out) >= limit:
-                    break
-        return out
-
-    def detect_faces_or_heads(self, img: np.ndarray, person_boxes: Optional[list] = None) -> list:
-        """Tìm gương mặt (thẳng/nghiêng) và vùng đầu-mặt khi đeo khẩu trang/nón."""
-        h, w = img.shape[:2]
-        gray = cv2.equalizeHist(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
-        raw_boxes = []
-
-        if self.face_frontal is not None:
-            for (fx, fy, fw, fh) in self.face_frontal.detectMultiScale(gray, 1.12, 4, minSize=(26, 26)):
-                raw_boxes.append(self._expand_box(fx, fy, fw, fh, w, h, pad=0.32))
-
-        if self.face_profile is not None:
-            for (fx, fy, fw, fh) in self.face_profile.detectMultiScale(gray, 1.15, 4, minSize=(26, 26)):
-                raw_boxes.append(self._expand_box(fx, fy, fw, fh, w, h, pad=0.32))
-
-        # Nếu đeo khẩu trang/nón che mất mặt chuẩn, lấy vùng đầu từ upper-body hoặc khung người chuyển động
-        if not raw_boxes and self.upper_body is not None:
-            for (ux, uy, uw, uh) in self.upper_body.detectMultiScale(gray, 1.12, 3, minSize=(55, 55)):
-                head_h = int(uh * 0.48)
-                head_w = int(uw * 0.52)
-                head_x = ux + (uw - head_w) // 2
-                raw_boxes.append(self._expand_box(head_x, uy, head_w, head_h, w, h, pad=0.22))
-
-        if not raw_boxes and person_boxes:
-            for (px, py, pw, ph) in person_boxes:
-                if ph > pw * 0.9 and ph >= 50:
-                    head_h = max(28, int(ph * 0.30))
-                    head_w = max(28, int(pw * 0.65))
-                    head_x = px + (pw - head_w) // 2
-                    raw_boxes.append(self._expand_box(head_x, py, head_w, head_h, w, h, pad=0.25))
-
-        return self._dedup_boxes(raw_boxes, limit=2)
-
-    def detect_license_plates(self, img: np.ndarray) -> list:
-        """Tìm biển số xe (1 dòng & 2 dòng) bằng Haar + hình học mật độ cạnh."""
-        h, w = img.shape[:2]
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        candidates = []
-
+    def _find_plate_in_vehicle(self, veh_crop: np.ndarray):
+        vh, vw = veh_crop.shape[:2]
+        if vw < 40 or vh < 30:
+            return None
+        gray = cv2.cvtColor(veh_crop, cv2.COLOR_BGR2GRAY)
         if self.plate_cascade is not None:
-            for (px, py, pw, ph) in self.plate_cascade.detectMultiScale(gray, 1.12, 4, minSize=(42, 16)):
-                if 1.1 <= (pw / float(max(1, ph))) <= 5.5:
-                    candidates.append(self._expand_box(px, py, pw, ph, w, h, pad=0.22))
+            for (px, py, pw, ph) in self.plate_cascade.detectMultiScale(gray, 1.1, 3, minSize=(28, 12)):
+                if 1.1 <= (pw / float(max(1, ph))) <= 5.2:
+                    return self._clamp_box(px - 8, py - 6, px + pw + 8, py + ph + 6, vw, vh)
 
-        # Bổ sung phát hiện hình chữ nhật biển số có mật độ nét chữ cao (biển 1 dòng & 2 dòng VN)
-        if not candidates:
-            rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 5))
-            blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rect_kernel)
-            grad_x = cv2.Sobel(blackhat, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=3)
-            grad_x = np.absolute(grad_x)
-            max_v = float(np.max(grad_x)) or 1.0
-            grad_x = np.uint8(255.0 * (grad_x / max_v))
-            grad_x = cv2.GaussianBlur(grad_x, (5, 5), 0)
-            grad_x = cv2.morphologyEx(grad_x, cv2.MORPH_CLOSE, rect_kernel)
-            _, thresh = cv2.threshold(grad_x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            thresh = cv2.erode(thresh, None, iterations=1)
-            thresh = cv2.dilate(thresh, None, iterations=2)
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:12]
-            for c in contours:
-                cx, cy, cw, ch = cv2.boundingRect(c)
-                ratio = cw / float(max(1, ch))
-                area = cw * ch
-                # Bỏ qua vùng quá nhỏ/quá lớn hoặc góc trên cùng (nơi chứa dòng đồng hồ OSD camera)
-                if cy < int(h * 0.14):
-                    continue
-                if 1200 <= area <= int(w * h * 0.12) and (1.15 <= ratio <= 5.2):
-                    roi = gray[cy : cy + ch, cx : cx + cw]
-                    if roi.size > 0 and float(np.std(roi)) > 36.0:
-                        candidates.append(self._expand_box(cx, cy, cw, ch, w, h, pad=0.18))
-
-        return self._dedup_boxes(candidates, limit=2)
+        # Tìm vùng biển số sáng/tương phản cao ở nửa dưới thân xe
+        rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rect_kernel)
+        grad_x = np.absolute(cv2.Sobel(blackhat, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=3))
+        max_v = float(np.max(grad_x)) or 1.0
+        grad_x = np.uint8(255.0 * (grad_x / max_v))
+        grad_x = cv2.morphologyEx(cv2.GaussianBlur(grad_x, (3, 3), 0), cv2.MORPH_CLOSE, rect_kernel)
+        _, thresh = cv2.threshold(grad_x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:6]:
+            cx, cy, cw, ch = cv2.boundingRect(c)
+            ratio = cw / float(max(1, ch))
+            if cy < int(vh * 0.28):
+                continue
+            if (cw * ch) >= 350 and (1.1 <= ratio <= 4.8):
+                roi = veh_crop[cy : cy + ch, cx : cx + cw]
+                if not self._is_green_foliage(roi) and float(np.std(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY))) > 32.0:
+                    return self._clamp_box(cx - 10, cy - 8, cx + cw + 10, cy + ch + 8, vw, vh)
+        return None
 
     def extract_detail_crops(
         self,
         img: np.ndarray,
         prefix: str,
-        person_boxes: Optional[list] = None,
+        moving_boxes: Optional[list] = None,
     ) -> list:
-        """Trích xuất & làm nét ảnh gương mặt/đầu và biển số xe, trả về danh sách dict chi tiết."""
-        if img is None or img.size == 0:
+        """Chỉ cắt từ vùng ĐANG CHUYỂN ĐỘNG: Người -> từ vai lên; Xe -> toàn xe & biển số."""
+        if img is None or img.size == 0 or not moving_boxes:
             return []
+        ih, iw = img.shape[:2]
         details = []
 
-        for idx, (x1, y1, x2, y2) in enumerate(self.detect_faces_or_heads(img, person_boxes), start=1):
-            crop = img[y1:y2, x1:x2]
-            enhanced = self.enhance_zoom_crop(crop, min_width=420)
-            out_file = f"snapshots/{prefix}_face{idx}.jpg"
-            cv2.imwrite(out_file, enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-            details.append({
-                "kind": "face",
-                "label": "👤 Gương mặt / Đầu (Đã phóng to & làm nét)",
-                "url": f"/{out_file}",
-            })
+        # Sắp xếp các vùng chuyển động lớn nhất trước (bỏ qua vùng quá nhỏ)
+        valid_boxes = [
+            b for b in sorted(moving_boxes, key=lambda x: x[2] * x[3], reverse=True)
+            if b[2] >= 28 and b[3] >= 28 and (b[2] * b[3]) >= 1400
+        ][:3]
 
-        for idx, (x1, y1, x2, y2) in enumerate(self.detect_license_plates(img), start=1):
-            crop = img[y1:y2, x1:x2]
-            enhanced = self.enhance_zoom_crop(crop, min_width=440)
-            out_file = f"snapshots/{prefix}_plate{idx}.jpg"
-            cv2.imwrite(out_file, enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-            details.append({
-                "kind": "plate",
-                "label": "🚗 Biển số xe (Đã phóng to & làm nét)",
-                "url": f"/{out_file}",
-            })
+        person_count = 0
+        vehicle_count = 0
+
+        for (bx, by, bw, bh) in valid_boxes:
+            # Bỏ qua vùng góc trên cùng nơi có chữ đồng hồ OSD hoặc lá cây
+            if by < int(ih * 0.08) and bh < int(ih * 0.16):
+                continue
+            roi_check = img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
+            if self._is_green_foliage(roi_check):
+                continue
+
+            ratio = bw / float(max(1, bh))
+
+            # 1) Dáng người (cao hơn hoặc gần vuông): cắt từ VAI LÊN ĐẦU (45% phần trên của khung người)
+            if ratio <= 1.05 and person_count < 2:
+                pad_x = int(bw * 0.25)
+                top_y = max(0, by - int(bh * 0.10))
+                shoulder_y = min(ih, by + max(36, int(bh * 0.45)))
+                x1, y1, x2, y2 = self._clamp_box(bx - pad_x, top_y, bx + bw + pad_x, shoulder_y, iw, ih)
+                if (x2 - x1) >= 24 and (y2 - y1) >= 24:
+                    person_count += 1
+                    enhanced = self.enhance_zoom_crop(img[y1:y2, x1:x2], min_width=360)
+                    out_file = f"snapshots/{prefix}_person{person_count}.jpg"
+                    cv2.imwrite(out_file, enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                    details.append({
+                        "kind": "face",
+                        "label": "👤 Người (Phóng to từ vai lên)",
+                        "url": f"/{out_file}",
+                    })
+
+            # 2) Xe cộ (rộng hơn cao hoặc khối lớn): cắt toàn cảnh xe + tìm biển số sau/thân xe
+            elif ratio > 1.05 and vehicle_count < 1:
+                pad_x = int(bw * 0.18)
+                pad_y = int(bh * 0.18)
+                vx1, vy1, vx2, vy2 = self._clamp_box(bx - pad_x, by - pad_y, bx + bw + pad_x, by + bh + pad_y, iw, ih)
+                veh_crop = img[vy1:vy2, vx1:vx2]
+                if veh_crop.size > 0 and (vx2 - vx1) >= 48:
+                    vehicle_count += 1
+                    enhanced_veh = self.enhance_zoom_crop(veh_crop, min_width=460)
+                    out_veh = f"snapshots/{prefix}_vehicle{vehicle_count}.jpg"
+                    cv2.imwrite(out_veh, enhanced_veh, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                    details.append({
+                        "kind": "vehicle",
+                        "label": "🏍️/🚗 Phương tiện di chuyển",
+                        "url": f"/{out_veh}",
+                    })
+                    plate_box = self._find_plate_in_vehicle(veh_crop)
+                    if plate_box is not None:
+                        px1, py1, px2, py2 = plate_box
+                        enhanced_plate = self.enhance_zoom_crop(veh_crop[py1:py2, px1:px2], min_width=360)
+                        out_plate = f"snapshots/{prefix}_plate{vehicle_count}.jpg"
+                        cv2.imwrite(out_plate, enhanced_plate, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                        details.append({
+                            "kind": "plate",
+                            "label": "🔢 Biển số xe (Phóng to)",
+                            "url": f"/{out_plate}",
+                        })
 
         return details
 
