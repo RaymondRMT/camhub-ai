@@ -1309,6 +1309,70 @@ async def push_two_way_audio(cam_id: str, audio: UploadFile = File(...), user: d
 
 
 # --- DEVICE HEALTH, STORAGE, RECORDINGS & ALERTS ---
+
+_NET_PREV = {"ts": 0.0, "rx": 0, "tx": 0}
+_NET_LOCK = threading.Lock()
+
+
+def _read_net_speed_and_ping() -> dict:
+    rx_bytes, tx_bytes = 0, 0
+    got_counters = False
+    try:
+        import psutil
+        io = psutil.net_io_counters()
+        rx_bytes, tx_bytes = int(io.bytes_recv), int(io.bytes_sent)
+        got_counters = True
+    except Exception:
+        try:
+            with open("/proc/net/dev", "r", encoding="utf-8") as f:
+                for line in f.readlines()[2:]:
+                    if ":" not in line:
+                        continue
+                    iface, rest = line.split(":", 1)
+                    if iface.strip() == "lo":
+                        continue
+                    cols = rest.split()
+                    if len(cols) >= 9:
+                        rx_bytes += int(cols[0])
+                        tx_bytes += int(cols[8])
+                        got_counters = True
+        except Exception:
+            pass
+
+    down_kbps = 0.0
+    up_kbps = 0.0
+    if got_counters:
+        now = time.time()
+        with _NET_LOCK:
+            prev_ts = _NET_PREV["ts"]
+            if prev_ts > 0 and now > prev_ts:
+                dt = now - prev_ts
+                down_kbps = max(0.0, ((rx_bytes - _NET_PREV["rx"]) * 8.0) / (dt * 1000.0))
+                up_kbps = max(0.0, ((tx_bytes - _NET_PREV["tx"]) * 8.0) / (dt * 1000.0))
+            _NET_PREV["ts"] = now
+            _NET_PREV["rx"] = rx_bytes
+            _NET_PREV["tx"] = tx_bytes
+
+    ping_ms = None
+    if os.environ.get("CAMHUB_DISABLE_TUNNEL") != "1":
+        t0 = time.perf_counter()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.5)
+        try:
+            s.connect(("1.1.1.1", 443))
+            ping_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        except Exception:
+            ping_ms = None
+        finally:
+            s.close()
+
+    return {
+        "net_down_kbps": round(down_kbps, 1),
+        "net_up_kbps": round(up_kbps, 1),
+        "ping_ms": ping_ms,
+    }
+
+
 def _read_cpu_ram_gpu() -> dict:
     cpu_pct = 0.0
     ram_pct = 0.0
@@ -1373,7 +1437,7 @@ def _read_cpu_ram_gpu() -> dict:
 
 @app.get("/api/system/health")
 def get_device_health(user: dict = Depends(get_current_user)):
-    sys_info = _read_cpu_ram_gpu()
+    sys_info = {**_read_cpu_ram_gpu(), **_read_net_speed_and_ping()}
     try:
         raw = subprocess.check_output(
             ["termux-battery-status"],
