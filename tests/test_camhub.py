@@ -207,5 +207,31 @@ class CamHubEndToEndTests(unittest.TestCase):
         self.assertEqual(r_fb.json()["summary"]["total_false"], 1)
 
 
+
+    def test_ai_overlay_renderer_and_api(self):
+        import numpy as np
+        from ai_vision import AIOverlayRenderer
+
+        renderer = AIOverlayRenderer()
+        img = np.zeros((270, 480, 3), dtype=np.uint8)
+        dets = [
+            {"box": (20, 30, 50, 120), "kind": "person", "label": "Người di chuyển"},
+            {"box": (100, 40, 90, 80), "kind": "rider", "label": "Người đi xe"},
+            {"box": (220, 60, 140, 70), "kind": "vehicle", "label": "Xe"},
+            {"box": (120, 180, 110, 50), "kind": "fall", "label": "Người té ngã"},
+        ]
+        out = renderer.render(img, dets)
+        self.assertEqual(out.shape, img.shape)
+        self.assertGreater(int(out.sum()), 0)
+
+        res = self.client.get("/api/ai/overlay", headers=self._auth_header(self.admin_token))
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("enabled", res.json())
+        res2 = self.client.post("/api/ai/overlay", json={"enabled": False}, headers=self._auth_header(self.admin_token))
+        self.assertEqual(res2.status_code, 200)
+        self.assertFalse(res2.json()["enabled"])
+        self.client.post("/api/ai/overlay", json={"enabled": True}, headers=self._auth_header(self.admin_token))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
