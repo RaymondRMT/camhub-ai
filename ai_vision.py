@@ -59,7 +59,8 @@ class RollingH264Writer:
         ts_name = now_vn().strftime("%Y%m%d_%H%M%S")
         out_path = os.path.join(self.out_dir, f"continuous_{ts_name}.mp4")
         cmd = [
-            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "ffmpeg", "-nostdin",
+            "-noautorotate", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", "4", "-i", "-",
             "-vf", "scale='min(720,iw)':-2",
             "-c:v", "libx264", "-preset", "superfast", "-crf", "33",
