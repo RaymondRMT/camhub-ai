@@ -1055,8 +1055,16 @@
       if (lens > 0 || (arguments[5] && String(arguments[5]).toLowerCase() === "yoosee")) {
         videoEl.style.display = "none";
         mjpegEl.style.display = "block";
-        mjpegEl.src = mjpegUrl;
-        if (onModeChange) onModeChange("Mắt " + lens);
+        mjpegEl.dataset.baseStream = mjpegUrl;
+        mjpegEl.onerror = () => {
+          setTimeout(() => {
+            if (mjpegEl.isConnected && mjpegEl.dataset.baseStream) {
+              mjpegEl.src = mjpegEl.dataset.baseStream + "&_t=" + Date.now();
+            }
+          }, 2500);
+        };
+        mjpegEl.src = mjpegUrl + "&_t=" + Date.now();
+        if (onModeChange) onModeChange(lens > 0 ? "Mắt " + lens : "MJPEG");
         return null;
       }
 
@@ -1801,6 +1809,13 @@
       loadDeviceHealth();
       if (getCurrentRole() === "admin") { loadTunnelInfo(); loadSetupChecklist(); }
       pollTimers.push(setInterval(pollCameraStatus, 8000));
+      pollTimers.push(setInterval(() => {
+        document.querySelectorAll("img.mjpeg-stream").forEach(img => {
+          if (img.style.display !== "none" && img.dataset.baseStream) {
+            img.src = img.dataset.baseStream + "&_t=" + Date.now();
+          }
+        });
+      }, 45000));
       pollTimers.push(setInterval(loadStorage, 30000));
       pollTimers.push(setInterval(loadAlerts, 5000));
       pollTimers.push(setInterval(loadDeviceHealth, 25000));
