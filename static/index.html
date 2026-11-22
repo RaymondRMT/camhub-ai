@@ -301,7 +301,6 @@
 <body>
 
   <div id="toastStack" class="toast-stack"></div>
-  <audio id="liveAudioPlayer" style="display:none;"></audio>
 
   <!-- MÀN HÌNH ĐĂNG NHẬP / KHỞI TẠO QUẢN TRỊ VIÊN LẦN ĐẦU -->
   <div id="authModal" class="auth-modal">
@@ -411,7 +410,6 @@
           </div>
 
           <div style="border-top:1px solid var(--border); padding-top:12px; display:flex; flex-direction:column; gap:8px;">
-            <button id="focusAudioBtn" class="btn" onclick="toggleLiveAudio(focusedCamId)">🔊 Bật nghe âm thanh trực tiếp</button>
             <button id="focusPttBtn" class="btn ptt-btn"
               onmousedown="startTalking(focusedCamId, this, event)" onmouseup="stopTalking(this, event)" onmouseleave="stopTalking(this, event)"
               ontouchstart="startTalking(focusedCamId, this, event)" ontouchend="stopTalking(this, event)" ontouchcancel="stopTalking(this, event)">Giữ để đàm thoại 2 chiều</button>
@@ -497,6 +495,7 @@
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn sm active" id="splitLensesBtn" onclick="toggleSplitLenses()" title="Tự động tách camera 2/3 mắt thành các khung riêng">Tách đa mắt: BẬT</button>
+            <button class="btn sm active" id="aiOverlayBtn" onclick="toggleAiOverlay()" title="Hiển thị khung nhận diện AI & nhãn đối tượng trực tiếp trên video">Khung AI: BẬT</button>
             <button class="btn sm" id="streamModeBtn" onclick="toggleRemoteSafeMode()" title="Chuyển giữa MJPEG liên tục và Chống đứng hình qua Tunnel">Chế độ: Tự động</button>
             <button class="btn sm admin-only" onclick="jumpToView('setup')">+ Thêm Camera</button>
             <button class="btn sm primary" onclick="toggleGridFullscreen()">Toàn màn hình lưới</button>
@@ -1120,6 +1119,32 @@
       return () => { stopped = true; if (nextTimer) clearTimeout(nextTimer); };
     }
 
+    let aiOverlayEnabled = true;
+
+    function updateAiOverlayBtn(enabled) {
+      aiOverlayEnabled = !!enabled;
+      const btn = document.getElementById("aiOverlayBtn");
+      if (btn) {
+        btn.classList.toggle("active", aiOverlayEnabled);
+        btn.innerText = aiOverlayEnabled ? "Khung AI: BẬT" : "Khung AI: TẮT";
+      }
+    }
+
+    async function toggleAiOverlay() {
+      const next = !aiOverlayEnabled;
+      updateAiOverlayBtn(next);
+      try {
+        const res = await authFetch("/api/ai/overlay", {
+          method: "POST",
+          body: JSON.stringify({ enabled: next }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          updateAiOverlayBtn(data.enabled);
+        }
+      } catch (e) {}
+    }
+
     function toggleSplitLenses() {
       splitLensesEnabled = !splitLensesEnabled;
       localStorage.setItem("camhub_split_lenses", splitLensesEnabled ? "1" : "0");
@@ -1250,7 +1275,6 @@
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
             <span style="font-size:0.79rem; color:var(--text-secondary); font-weight:600;">${escapeHtml(c.brand.toUpperCase())} • ${escapeHtml(c.ip)}</span>
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
-              <button class="btn sm ${activeAudioCamId === c.id ? 'active' : ''}" data-audio-btn="${safeId}" onclick="toggleLiveAudio('${safeId}')">${activeAudioCamId === c.id ? '🔊 Đang nghe' : '🔇 Nghe'}</button>
               <button class="btn sm ptt-btn"
                 onmousedown="startTalking('${safeId}', this, event)" onmouseup="stopTalking(this, event)" onmouseleave="stopTalking(this, event)"
                 ontouchstart="startTalking('${safeId}', this, event)" ontouchend="stopTalking(this, event)" ontouchcancel="stopTalking(this, event)">Giữ để nói</button>
@@ -1816,6 +1840,7 @@
       const h = await res.json();
       document.getElementById("deviceThermalPill").innerText = `Pin: ${h.battery_pct}% • ${h.temperature}°C`;
       document.getElementById("aiEnginePill").innerText = `AI: ${h.ai_engine || "OpenCV"}`;
+      if (typeof h.ai_overlay === "boolean") updateAiOverlayBtn(h.ai_overlay);
       const cpuEl = document.getElementById("cpuRamPill");
       if (cpuEl) cpuEl.innerText = `CPU: ${h.cpu_pct ?? 0}% (${h.cpu_cores || 1} nhân) • RAM: ${h.ram_pct ?? 0}%`;
       const gpuEl = document.getElementById("gpuPill");
