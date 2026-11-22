@@ -400,9 +400,10 @@ def register_mediamtx_path(cam_id: str, rtsp_url: str):
 
 def sync_cameras_on_boot():
     with get_db_connection() as conn:
-        rows = conn.execute("SELECT id, name, rtsp_url FROM cameras").fetchall()
-    for cam_id, name, rtsp_url in rows:
-        register_mediamtx_path(cam_id, rtsp_url)
+        rows = conn.execute("SELECT id, name, brand, rtsp_url FROM cameras").fetchall()
+    for cam_id, name, brand, rtsp_url in rows:
+        if (brand or "").lower() != "yoosee" and "/onvif" not in (rtsp_url or "").lower():
+            register_mediamtx_path(cam_id, rtsp_url)
         ai_engine.start_camera_monitor(cam_id, name, rtsp_url)
 
 
@@ -1093,7 +1094,8 @@ def add_camera(req: CameraCreateRequest, admin: dict = Depends(require_admin)):
             (cam_id, cam_name, ip_clean, brand_key, req.cam_user.strip() or "admin", req.cam_pass, rtsp_url),
         )
         conn.commit()
-    register_mediamtx_path(cam_id, rtsp_url)
+    if brand_key != "yoosee" and "/onvif" not in rtsp_url.lower():
+        register_mediamtx_path(cam_id, rtsp_url)
     ai_engine.start_camera_monitor(cam_id, cam_name, rtsp_url)
     return {"status": "ok", "id": cam_id, "rtsp_masked": mask_rtsp_url(rtsp_url)}
 
@@ -1115,7 +1117,8 @@ def update_camera(cam_id: str, req: CameraCreateRequest, admin: dict = Depends(r
         )
         conn.commit()
     ONVIF_CLIENTS.pop(cam_id, None)
-    register_mediamtx_path(cam_id, rtsp_url)
+    if brand_key != "yoosee" and "/onvif" not in rtsp_url.lower():
+        register_mediamtx_path(cam_id, rtsp_url)
     ai_engine.start_camera_monitor(cam_id, cam_name, rtsp_url)
     return {"status": "ok", "id": cam_id}
 
