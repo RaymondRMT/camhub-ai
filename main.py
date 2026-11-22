@@ -656,6 +656,10 @@ class TestFallRequest(BaseModel):
     cam_id: Optional[str] = None
 
 
+class AlertFeedbackRequest(BaseModel):
+    verdict: str  # "true" | "false" 
+
+
 # --- HLS REVERSE PROXY & UI ---
 @app.get("/hls/{path:path}")
 async def proxy_hls(path: str):
@@ -1592,7 +1596,41 @@ def list_recordings(user: dict = Depends(get_current_user)):
 @app.get("/api/alerts")
 def get_alerts(user: dict = Depends(get_current_user)):
     with ALERTS_LOCK:
-        return {"alerts": list(ALERTS_LOG)}
+        return {"alerts": list(ALERTS_LOG), "learning": ai_engine.learner.get_summary()}
+
+
+@app.post("/api/alerts/{alert_id}/feedback")
+def submit_alert_feedback(alert_id: str, req: AlertFeedbackRequest, user: dict = Depends(get_current_user)):
+    verdict = req.verdict.strip().lower()
+    if verdict not in ("true", "false"):
+        raise HTTPException(status_code=400, detail="Giá trị phản hồi phải là 'true' hoặc 'false'")
+    target = None
+    with ALERTS_LOCK:
+        for a in ALERTS_LOG:
+            if a.get("id") == alert_id:
+                a["feedback"] = verdict
+                target = dict(a)
+                break
+    if not target:
+        raise HTTPException(status_code=404, detail="Không tìm thấy cảnh báo")
+    updated = ai_engine.learner.record_feedback(
+        target.get("cam_id", "cam"),
+        int(target.get("lens_idx") or 1),
+        verdict,
+        target.get("norm_boxes") or [],
+    )
+    return {"status": "ok", "verdict": verdict, "learned": updated, "summary": ai_engine.learner.get_summary()}
+
+
+@app.get("/api/ai/learning")
+def get_ai_learning(user: dict = Depends(get_current_user)):
+    return ai_engine.learner.get_summary()
+
+
+@app.delete("/api/ai/learning")
+def reset_ai_learning(admin: dict = Depends(require_admin)):
+    ai_engine.learner.reset()
+    return {"status": "ok"}
 
 
 @app.post("/api/alerts/test-fall")
