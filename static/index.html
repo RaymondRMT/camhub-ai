@@ -1841,6 +1841,14 @@
       document.getElementById("alertsContainer").innerHTML = filtered.map(a => `
         <div class="card cam-card" style="border-left:4px solid ${a.type === 'fall' ? 'var(--danger)' : 'var(--warning)'};">
           <img src="${escapeHtml(a.snapshot)}" style="width:100%; border-radius:11px; aspect-ratio:16/9; object-fit:cover; background:#020617;" />
+          ${(a.detail_snapshots && a.detail_snapshots.length) ? `
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:8px;">
+              ${a.detail_snapshots.map(d => `
+                <div style="background:var(--surface-subtle); border:1px solid var(--border); border-radius:10px; padding:5px;">
+                  <img src="${escapeHtml(d.url)}" style="width:100%; border-radius:7px; aspect-ratio:4/3; object-fit:contain; background:#020617;" />
+                  <div style="font-size:0.7rem; font-weight:700; color:var(--accent); margin-top:3px;">${escapeHtml(d.label || "Chi tiết")}</div>
+                </div>`).join("")}
+            </div>` : ""}
           <strong style="font-size:0.9rem;">${escapeHtml(a.message)}</strong>
           <span style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(a.timestamp)}</span>
         </div>`).join("") || `<p style="font-size:0.85rem; color:var(--text-muted);">Chưa có cảnh báo nào trong mục này.</p>`;
