@@ -7,7 +7,6 @@ set -euo pipefail
 # ==============================================================================
 
 REPO_URL="${CAMHUB_REPO_URL:-https://github.com/RaymondRMT/camhub-ai.git}"
-SCRIPT_RAW_URL="${CAMHUB_SCRIPT_URL:-https://raw.githubusercontent.com/RaymondRMT/camhub-ai/main/setup_camhub.sh}"
 MEDIAMTX_VERSION="v1.9.3"
 
 print_banner() {
@@ -47,11 +46,9 @@ install_inside_ubuntu() {
 
   echo "[Ubuntu 1/5] Cập nhật gói hệ thống & thư viện nền AI..."
   export DEBIAN_FRONTEND=noninteractive
-  dpkg --configure -a --force-confold 2>/dev/null || true
+  export TZ=Asia/Ho_Chi_Minh
   apt-get update -y
   apt-get install -y --no-install-recommends \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold" \
     git curl wget tar ca-certificates \
     python3 python3-pip python3-venv \
     ffmpeg libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
@@ -135,17 +132,9 @@ install_on_termux_android() {
   grep -q "allow-external-apps" "$HOME/.termux/termux.properties" 2>/dev/null || echo "allow-external-apps = true" >> "$HOME/.termux/termux.properties"
   termux-reload-settings || true
 
-  echo "[Termux 1/4] Cập nhật Termux (tự động giữ cấu hình cũ, không dừng hỏi dpkg) & cài proot-distro..."
-  export DEBIAN_FRONTEND=noninteractive
-  dpkg --configure -a --force-confold 2>/dev/null || true
-  pkg update -y
-  apt-get upgrade -y \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold"
-  pkg install -y \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold" \
-    proot-distro git curl wget termux-api
+  echo "[Termux 1/4] Cập nhật Termux & cài proot-distro..."
+  pkg update -y && pkg upgrade -y
+  pkg install -y proot-distro git curl wget termux-api
 
   echo "[Termux 2/4] Cài đặt máy chủ Ubuntu trong Termux..."
   if ! proot-distro list 2>/dev/null | grep -qE "ubuntu.*installed"; then
@@ -156,60 +145,34 @@ install_on_termux_android() {
 
   echo "[Termux 3/4] Cài đặt CamHub AI Pro bên trong máy chủ Ubuntu..."
   mkdir -p /sdcard/CamHub_Videos || true
-  curl -fsSL "$SCRIPT_RAW_URL" -o "$PREFIX/tmp/setup_camhub_ubuntu.sh"
-  proot-distro login ubuntu --shared-tmp -- bash -c "
+  proot-distro login ubuntu --shared-tmp --bind /sdcard:/sdcard -- bash -c "
     export CAMHUB_REPO_URL='$REPO_URL'
+    curl -fsSL https://raw.githubusercontent.com/RaymondRMT/camhub-ai/main/setup_camhub.sh -o /tmp/setup_camhub_ubuntu.sh
     bash /tmp/setup_camhub_ubuntu.sh --inside-ubuntu
   "
 
-  echo "[Termux 4/4] Tạo lệnh điều khiển nhanh 'camhub' (giữ nền proot 24/7) & tự khởi động (Termux:Boot)..."
+  echo "[Termux 4/4] Tạo lệnh điều khiển nhanh 'camhub' & tự khởi động (Termux:Boot)..."
   cat << 'EOF' > "$PREFIX/bin/camhub"
 #!/data/data/com.termux/files/usr/bin/bash
 ACTION="${1:-start}"
 case "$ACTION" in
   start)
     termux-wake-lock || true
-    proot-distro login ubuntu --shared-tmp -- bash -c "cd ~/camhub_server && bash ./stop_camhub.sh" 2>/dev/null || true
-    nohup proot-distro login ubuntu --shared-tmp -- bash -c '
-      cd ~/camhub_server
-      : > server.log
-      [ -x ./mediamtx ] && [ -f ./mediamtx.yml ] && (./mediamtx mediamtx.yml > mediamtx.log 2>&1 &)
-      sleep 2
-      exec ./.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 >> server.log 2>&1
-    ' > "$HOME/camhub_proot.log" 2>&1 &
-
-    echo -n "Đang khởi động máy chủ AI (Ubuntu)..."
-    READY=0
-    for _ in $(seq 1 25); do
-      if curl -fsS http://127.0.0.1:8000/api/auth/status >/dev/null 2>&1; then
-        READY=1
-        break
-      fi
-      echo -n "."
-      sleep 1
-    done
-    echo ""
-
-    if [ "$READY" -eq 1 ]; then
-      echo "CamHub AI Pro đã sẵn sàng tại: http://127.0.0.1:8000"
-      termux-open-url "http://127.0.0.1:8000" 2>/dev/null || true
-    else
-      echo "Máy chủ đang khởi động chậm, kiểm tra log bằng lệnh: camhub logs"
-    fi
+    proot-distro login ubuntu --shared-tmp --bind /sdcard:/sdcard -- bash -c "cd ~/camhub_server && bash ./start_camhub.sh"
+    sleep 2
+    termux-open-url "http://localhost:8000" 2>/dev/null || true
     ;;
   stop)
-    proot-distro login ubuntu --shared-tmp -- bash -c "cd ~/camhub_server && bash ./stop_camhub.sh" 2>/dev/null || true
-    pkill -f "proot-distro.*uvicorn" 2>/dev/null || true
-    echo "Đã dừng CamHub AI Pro."
+    proot-distro login ubuntu --shared-tmp -- bash -c "cd ~/camhub_server && bash ./stop_camhub.sh"
     ;;
   status)
-    curl -fsS http://127.0.0.1:8000/api/auth/status && echo " -> SERVER DANG CHAY ON DINH" || echo "SERVER CHUA CHAY (go: camhub logs)"
+    proot-distro login ubuntu --shared-tmp -- bash -c "pgrep -af 'uvicorn|mediamtx|cloudflared' || echo 'CamHub AI dang dung'"
     ;;
   logs)
     proot-distro login ubuntu --shared-tmp -- bash -c "tail -n 60 ~/camhub_server/server.log"
     ;;
   update)
-    proot-distro login ubuntu --shared-tmp -- bash -c "cd ~/camhub_server && git pull origin main && source .venv/bin/activate && pip install -r requirements.txt"
+    proot-distro login ubuntu --shared-tmp --bind /sdcard:/sdcard -- bash -c "cd ~/camhub_server && git pull origin main && source .venv/bin/activate && pip install -r requirements.txt"
     ;;
   *)
     echo "Cach dung: camhub {start|stop|status|logs|update}"
@@ -227,7 +190,7 @@ EOF
 
   echo "=================================================================="
   echo "  CÀI ĐẶT HOÀN TẤT! ĐANG KHỞI ĐỘNG CAMHUB AI PRO TRÊN UBUNTU...   "
-  echo "  • Mở trình duyệt: http://127.0.0.1:8000                         "
+  echo "  • Mở trình duyệt: http://localhost:8000                         "
   echo "  • Lệnh quản lý:   camhub start | stop | status | logs | update  "
   echo "=================================================================="
   camhub start
