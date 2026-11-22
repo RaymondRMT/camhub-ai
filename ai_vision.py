@@ -1039,6 +1039,45 @@ class CameraAIProcessor:
             return False
         return edge_ratio >= 0.018
 
+    def _is_clear_person_or_vehicle(self, small_bgr: np.ndarray, small_box: tuple, full_img: np.ndarray, full_box: tuple) -> bool:
+        """Kiểm tra chặt chẽ hơn khi vật thể đi vào vùng báo giả: chỉ cho qua nếu thực sự có dáng/đường nét rõ của Người hoặc Xe."""
+        bx, by, bw, bh = small_box
+        rx, ry, rw, rh = full_box
+        ih, iw = full_img.shape[:2]
+        roi_full = full_img[max(0, ry) : min(ih, ry + rh), max(0, rx) : min(iw, rx + rw)]
+        if roi_full.size == 0 or self.enhancer._is_green_foliage(roi_full):
+            return False
+
+        # 1. Nếu nhận diện được dáng người bằng HOG trên vùng ảnh gốc
+        if rw >= 52 and rh >= 96:
+            try:
+                pad_x, pad_y = int(rw * 0.15), int(rh * 0.15)
+                px1, py1 = max(0, rx - pad_x), max(0, ry - pad_y)
+                px2, py2 = min(iw, rx + rw + pad_x), min(ih, ry + rh + pad_y)
+                hog_roi = full_img[py1:py2, px1:px2]
+                if hog_roi.shape[1] >= 64 and hog_roi.shape[0] >= 128:
+                    rects, _ = self.hog.detectMultiScale(hog_roi, winStride=(8, 8), padding=(4, 4), scale=1.08)
+                    if len(rects) > 0:
+                        return True
+            except Exception:
+                pass
+
+        # 2. Hoặc vật thể đủ lớn, tỷ lệ hợp lý (người/xe) và đường nét cạnh + tương phản rõ ràng
+        if (bw * bh) < 3200:
+            return False
+        ratio = bw / float(max(1, bh))
+        if not (0.25 <= ratio <= 2.6):
+            return False
+        s_ih, s_iw = small_bgr.shape[:2]
+        roi_s = small_bgr[max(0, by) : min(s_ih, by + bh), max(0, bx) : min(s_iw, bx + bw)]
+        if roi_s.size == 0:
+            return False
+        gray = cv2.cvtColor(roi_s, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 45, 130)
+        edge_ratio = cv2.countNonZero(edges) / float(max(1, roi_s.shape[0] * roi_s.shape[1]))
+        contrast = float(np.std(gray))
+        return edge_ratio >= 0.045 and contrast >= 32.0
+
     def _detect_fall_opencv_smart(self, small_bgr: np.ndarray, fg_clean: np.ndarray, st: dict, now: float) -> bool:
         """
         Phát hiện té ngã thông minh bằng OpenCV khi chưa có MediaPipe:
@@ -1325,7 +1364,8 @@ class CameraAIProcessor:
                         continue
                     rx, ry, rw, rh = int(bx * sx), int(by * sy), int(bw * sx), int(bh * sy)
                     nb = (rx / float(max(1, iw)), ry / float(max(1, ih)), rw / float(max(1, iw)), rh / float(max(1, ih)))
-                    if not self.learner.is_in_false_zone(cam_id, lens_idx, nb):
+                    in_false_zone = self.learner.is_in_false_zone(cam_id, lens_idx, nb)
+                    if (not in_false_zone) or self._is_clear_person_or_vehicle(small, (bx, by, bw, bh), lens_img, (rx, ry, rw, rh)):
                         person_boxes.append((rx, ry, rw, rh))
                         norm_boxes.append(nb)
             if not person_boxes:
