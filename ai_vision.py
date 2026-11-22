@@ -292,12 +292,12 @@ class CameraAIProcessor:
             "-timeout", "8000000",
             "-i", rtsp_url,
             "-an",
-            "-vf", "scale=640:-2,format=yuvj420p",
+            "-vf", "scale='min(1280,iw)':-2,format=yuvj420p",
             "-fps_mode", "drop",
             "-strict", "unofficial",
             "-f", "image2pipe",
             "-vcodec", "mjpeg",
-            "-q:v", "6",
+            "-q:v", "3",
             "-",
         ]
         return subprocess.Popen(
@@ -465,7 +465,7 @@ class CameraAIProcessor:
     ):
         now = time.time()
         # Giữ nhịp tối đa ~5 FPS ở Python thay vì để ffmpeg lặp khung hình cũ
-        if now - state.get("last_decode_ts", 0.0) < 0.18:
+        if now - state.get("last_decode_ts", 0.0) < 0.25:
             return
         state["last_decode_ts"] = now
 
@@ -492,7 +492,7 @@ class CameraAIProcessor:
             lens_jpegs.append((1, jpg_bytes))
         else:
             for idx, crop in enumerate(lenses, start=1):
-                ok_c, buf_c = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 78])
+                ok_c, buf_c = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
                 if ok_c:
                     lens_jpegs.append((idx, buf_c.tobytes()))
 
