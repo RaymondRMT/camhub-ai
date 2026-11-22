@@ -1056,21 +1056,36 @@
       loadCameras();
     }
 
-    function startAdaptiveSnapshotLoop(imgEl, snapBaseUrl, intervalMs = 450) {
+    function startAdaptiveSnapshotLoop(imgEl, snapBaseUrl, intervalMs = 500) {
       let stopped = false;
       const tick = () => {
-        if (stopped || !imgEl.isConnected) return;
+        if (stopped || !imgEl.isConnected || imgEl.offsetParent === null) return;
         const loader = new Image();
         const url = `${snapBaseUrl}&_t=${Date.now()}`;
+        let settled = false;
+        const guard = setTimeout(() => {
+          if (!settled && !stopped) {
+            settled = true;
+            loader.onload = null;
+            loader.onerror = null;
+            tick();
+          }
+        }, 6000);
         loader.onload = () => {
-          if (!stopped && imgEl.isConnected) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(guard);
+          if (!stopped && imgEl.isConnected && imgEl.offsetParent !== null) {
             imgEl.src = url;
             const t = setTimeout(tick, intervalMs);
             safeSnapshotTimers.push(t);
           }
         };
         loader.onerror = () => {
-          if (!stopped && imgEl.isConnected) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(guard);
+          if (!stopped && imgEl.isConnected && imgEl.offsetParent !== null) {
             const t = setTimeout(tick, 1800);
             safeSnapshotTimers.push(t);
           }
