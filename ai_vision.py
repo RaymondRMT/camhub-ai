@@ -8,6 +8,7 @@ import urllib.request
 import subprocess
 import threading
 from datetime import datetime, timedelta, timezone
+from collections import deque
 from typing import Optional
 import cv2
 import numpy as np
@@ -40,6 +41,136 @@ POSE_TASK_PATH = os.path.join("models", "pose_landmarker_lite.task")
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
 
 
+
+class RollingH264Writer:
+    """Ghi video dài (30-60 phút/tệp) chuẩn H.264 fMP4 xem được ngay cả khi đang ghi."""
+
+    def __init__(self, cam_id: str, segment_seconds: int = 1800):
+        self.cam_id = cam_id
+        self.segment_seconds = max(1800, min(3600, segment_seconds))
+        self.proc = None
+        self.seg_start = 0.0
+        self.lock = threading.Lock()
+        self.out_dir = os.path.join("recordings", cam_id)
+        os.makedirs(self.out_dir, exist_ok=True)
+
+    def _open_new_segment(self):
+        self.close()
+        ts_name = now_vn().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(self.out_dir, f"continuous_{ts_name}.mp4")
+        cmd = [
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", "4", "-i", "-",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "29",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+            out_path,
+        ]
+        try:
+            self.proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            self.seg_start = time.time()
+        except Exception:
+            self.proc = None
+
+    def write_frame(self, jpg_bytes: bytes):
+        with self.lock:
+            now = time.time()
+            if self.proc is None or self.proc.poll() is not None or (now - self.seg_start >= self.segment_seconds):
+                self._open_new_segment()
+            if self.proc and self.proc.stdin:
+                try:
+                    self.proc.stdin.write(jpg_bytes)
+                    self.proc.stdin.flush()
+                except Exception:
+                    self.close()
+
+    def close(self):
+        if self.proc is not None:
+            try:
+                if self.proc.stdin:
+                    self.proc.stdin.close()
+                self.proc.wait(timeout=3)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+            self.proc = None
+
+
+class EventClipManager:
+    """Quản lý bộ đệm vòng 15s và tự động xuất clip ngắn ~60s cho Chuyển động / Té ngã."""
+
+    def __init__(self, cam_id: str, pre_seconds: int = 15, post_seconds: int = 45):
+        self.cam_id = cam_id
+        self.ring = deque(maxlen=max(20, pre_seconds * 4))
+        self.active_events = {}  # event_type -> {"frames": list, "end_ts": float, "out_path": str}
+        self.lock = threading.Lock()
+        self.post_seconds = post_seconds
+        self.out_dir = os.path.join("recordings", cam_id)
+        os.makedirs(self.out_dir, exist_ok=True)
+
+    def push_frame(self, jpg_bytes: bytes):
+        now = time.time()
+        to_finalize = []
+        with self.lock:
+            self.ring.append(jpg_bytes)
+            for ev_type, job in list(self.active_events.items()):
+                job["frames"].append(jpg_bytes)
+                if now >= job["end_ts"] or len(job["frames"]) >= 280:
+                    to_finalize.append((ev_type, job["frames"], job["out_path"]))
+                    del self.active_events[ev_type]
+        for _, frames, out_path in to_finalize:
+            threading.Thread(target=self._encode_clip, args=(frames, out_path), daemon=True).start()
+
+    def trigger_clip(self, event_type: str):
+        now = time.time()
+        with self.lock:
+            if event_type in self.active_events:
+                return
+            ts_name = now_vn().strftime("%Y%m%d_%H%M%S")
+            out_path = os.path.join(self.out_dir, f"{event_type}_{ts_name}.mp4")
+            self.active_events[event_type] = {
+                "frames": list(self.ring),
+                "end_ts": now + self.post_seconds,
+                "out_path": out_path,
+            }
+
+    def flush_all(self):
+        with self.lock:
+            jobs = list(self.active_events.values())
+            self.active_events.clear()
+        for job in jobs:
+            if len(job["frames"]) >= 8:
+                threading.Thread(target=self._encode_clip, args=(job["frames"], job["out_path"]), daemon=True).start()
+
+    def _encode_clip(self, frames: list, out_path: str):
+        if not frames:
+            return
+        cmd = [
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", "4", "-i", "-",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            out_path,
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            if proc.stdin:
+                for jpg in frames:
+                    proc.stdin.write(jpg)
+                proc.stdin.close()
+            proc.wait(timeout=30)
+        except Exception:
+            pass
+
+
 class CameraAIProcessor:
     def __init__(self, on_alert_callback):
         self.on_alert = on_alert_callback
@@ -59,6 +190,9 @@ class CameraAIProcessor:
         self.hog = cv2.HOGDescriptor()
         self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
 
+        self.recorders = {}
+        self.clip_managers = {}
+        self.long_clip_sec = int(os.environ.get("CAMHUB_LONG_CLIP_SEC", "1800"))
         self.active_engine_label = self._resolve_engine_label()
         threading.Thread(target=self._thermal_guard_loop, daemon=True).start()
         if HAS_MP_TASKS and not HAS_MP_LEGACY and not os.path.exists(POSE_TASK_PATH):
@@ -148,12 +282,20 @@ class CameraAIProcessor:
             daemon=True,
         )
         with self.workers_lock:
+            self.recorders[cam_id] = RollingH264Writer(cam_id, segment_seconds=self.long_clip_sec)
+            self.clip_managers[cam_id] = EventClipManager(cam_id, pre_seconds=15, post_seconds=45)
             self.workers[cam_id] = (stop_event, t)
         t.start()
 
     def stop_camera_monitor(self, cam_id: str):
         with self.workers_lock:
             worker = self.workers.pop(cam_id, None)
+            rec = self.recorders.pop(cam_id, None)
+            cm = self.clip_managers.pop(cam_id, None)
+        if rec:
+            rec.close()
+        if cm:
+            cm.flush_all()
         if worker:
             stop_event, _ = worker
             stop_event.set()
@@ -399,6 +541,9 @@ class CameraAIProcessor:
             snap_file = f"snapshots/motion_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
             with open(snap_file, "wb") as f:
                 f.write(lens_jpg)
+            cm = self.clip_managers.get(cam_id)
+            if cm is not None:
+                cm.trigger_clip("motion")
             self.on_alert({
                 "id": f"motion_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
                 "type": "motion",
@@ -439,6 +584,9 @@ class CameraAIProcessor:
                     snap_file = f"snapshots/fall_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
                     with open(snap_file, "wb") as f:
                         f.write(lens_jpg)
+                    cm = self.clip_managers.get(cam_id)
+                    if cm is not None:
+                        cm.trigger_clip("fall")
                     self.on_alert({
                         "id": f"fall_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
                         "type": "fall",
@@ -502,6 +650,13 @@ class CameraAIProcessor:
             else ("MediaPipe Pose Tasks" if task_landmarker is not None else "OpenCV Person + Fall AI")
         )
         self.active_engine_label = engine_name
+
+        rec = self.recorders.get(cam_id)
+        if rec is not None and self.has_ffmpeg_cli:
+            rec.write_frame(jpg_bytes)
+        cm = self.clip_managers.get(cam_id)
+        if cm is not None and self.has_ffmpeg_cli:
+            cm.push_frame(jpg_bytes)
 
         with self.frames_lock:
             self.frames[(cam_id, 0)] = jpg_bytes
