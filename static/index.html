@@ -1052,7 +1052,7 @@
       const hlsUrl = `/hls/${encodeURIComponent(camId)}/index.m3u8`;
       const mjpegUrl = `/api/cameras/${encodeURIComponent(camId)}/mjpeg?lens=${lens}&token=${encodeURIComponent(getJwtToken())}`;
 
-      if (lens > 0) {
+      if (lens > 0 || (arguments[5] && String(arguments[5]).toLowerCase() === "yoosee")) {
         videoEl.style.display = "none";
         mjpegEl.style.display = "block";
         mjpegEl.src = mjpegUrl;
@@ -1162,7 +1162,7 @@
         const v = document.getElementById("vid_" + domKey);
         const m = document.getElementById("mjpeg_" + domKey);
         if (v && m) {
-          const hls = attachLiveStream(t.cam.id, v, m, null, t.lens);
+          const hls = attachLiveStream(t.cam.id, v, m, null, t.lens, t.cam.brand);
           if (hls) activeHlsInstances.push(hls);
         }
       });
@@ -1204,7 +1204,7 @@
 
       focusHlsInstance = attachLiveStream(camId, v, m, mode => {
         document.getElementById("focusStreamModeBadge").innerText = mode;
-      }, focusedLensIndex);
+      }, focusedLensIndex, cam.brand);
 
       document.getElementById("camFocusModal").classList.add("open");
     }
