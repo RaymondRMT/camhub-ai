@@ -472,6 +472,7 @@
           <span class="pill" id="deviceThermalPill">Pin: --% • --°C</span>
           <span class="pill" id="cpuRamPill">CPU: --% • RAM: --%</span>
           <span class="pill" id="gpuPill">GPU: --</span>
+          <span class="pill" id="netPill">Mạng: ↓ -- • ↑ -- • Ping -- ms</span>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
           <button class="btn sm" onclick="toggleTheme()" title="Đổi chế độ Sáng / Tối">
@@ -1760,6 +1761,13 @@
       if (cpuEl) cpuEl.innerText = `CPU: ${h.cpu_pct ?? 0}% (${h.cpu_cores || 1} nhân) • RAM: ${h.ram_pct ?? 0}%`;
       const gpuEl = document.getElementById("gpuPill");
       if (gpuEl) gpuEl.innerText = h.gpu_pct !== null && h.gpu_pct !== undefined ? `GPU: ${h.gpu_pct}% (${h.gpu_name || "SoC"})` : `GPU: ${h.gpu_name || "ARM SoC"}`;
+      const netEl = document.getElementById("netPill");
+      if (netEl) {
+        const fmt = k => k >= 1000 ? (k / 1000).toFixed(2) + " Mbps" : Math.round(k) + " kbps";
+        const pingTxt = h.ping_ms !== null && h.ping_ms !== undefined ? `${Math.round(h.ping_ms)} ms` : "Offline";
+        netEl.innerText = `Mạng: ↓ ${fmt(h.net_down_kbps || 0)} • ↑ ${fmt(h.net_up_kbps || 0)} • Ping ${pingTxt}`;
+        netEl.className = "pill" + (h.ping_ms == null ? " danger" : (h.ping_ms > 150 ? " warn" : ""));
+      }
     }
 
     async function loadStorage() {
