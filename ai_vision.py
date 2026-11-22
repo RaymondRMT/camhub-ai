@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import queue
 import math
 import json
 import uuid
@@ -43,6 +45,136 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stime
 
 
 
+
+class AdaptiveAILearner:
+    """Tự học nhẹ từ phản hồi Đúng/Sai của người dùng: giảm báo giả vùng cây cối & ưu tiên vùng đường đi."""
+
+    def __init__(self, state_file: str = "ai_learning.json"):
+        self.state_file = os.environ.get("CAMHUB_AI_LEARN_FILE", state_file)
+        self.lock = threading.Lock()
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                    if isinstance(d, dict):
+                        return d
+            except Exception:
+                pass
+        return {}
+
+    def _save(self):
+        try:
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _key(cam_id: str, lens_idx: int) -> str:
+        return f"{cam_id}::L{lens_idx}"
+
+    def _get_entry(self, key: str) -> dict:
+        if key not in self.data:
+            self.data[key] = {
+                "motion_threshold": 900,
+                "true_count": 0,
+                "false_count": 0,
+                "false_zones": [],
+                "true_zones": [],
+            }
+        return self.data[key]
+
+    def get_motion_threshold(self, cam_id: str, lens_idx: int) -> int:
+        with self.lock:
+            entry = self.data.get(self._key(cam_id, lens_idx))
+            return int(entry.get("motion_threshold", 900)) if entry else 900
+
+    def is_in_false_zone(self, cam_id: str, lens_idx: int, norm_box: tuple) -> bool:
+        nx, ny, nw, nh = norm_box
+        cx, cy = nx + nw / 2.0, ny + nh / 2.0
+        with self.lock:
+            entry = self.data.get(self._key(cam_id, lens_idx))
+            if not entry:
+                return False
+            for z in entry.get("false_zones", []):
+                if z["hits"] >= 2 and z["x1"] <= cx <= z["x2"] and z["y1"] <= cy <= z["y2"]:
+                    return True
+        return False
+
+    def zone_bonus(self, cam_id: str, lens_idx: int, norm_box: tuple) -> float:
+        nx, ny, nw, nh = norm_box
+        cx, cy = nx + nw / 2.0, ny + nh / 2.0
+        with self.lock:
+            entry = self.data.get(self._key(cam_id, lens_idx))
+            if not entry:
+                return 1.0
+            for z in entry.get("true_zones", []):
+                if z["x1"] <= cx <= z["x2"] and z["y1"] <= cy <= z["y2"]:
+                    return 1.35
+        return 1.0
+
+    def record_feedback(self, cam_id: str, lens_idx: int, verdict: str, norm_boxes: Optional[list] = None) -> dict:
+        with self.lock:
+            entry = self._get_entry(self._key(cam_id, lens_idx))
+            if verdict == "false":
+                entry["false_count"] += 1
+                entry["motion_threshold"] = min(2600, int(entry["motion_threshold"]) + 150)
+                for b in (norm_boxes or [])[:2]:
+                    nx, ny, nw, nh = b
+                    cx, cy = nx + nw / 2.0, ny + nh / 2.0
+                    matched = False
+                    for z in entry["false_zones"]:
+                        if z["x1"] <= cx <= z["x2"] and z["y1"] <= cy <= z["y2"]:
+                            z["hits"] += 1
+                            matched = True
+                            break
+                    if not matched:
+                        entry["false_zones"].append({
+                            "x1": round(max(0.0, nx - 0.04), 3),
+                            "y1": round(max(0.0, ny - 0.04), 3),
+                            "x2": round(min(1.0, nx + nw + 0.04), 3),
+                            "y2": round(min(1.0, ny + nh + 0.04), 3),
+                            "hits": 1,
+                        })
+                        entry["false_zones"] = entry["false_zones"][-15:]
+            else:
+                entry["true_count"] += 1
+                entry["motion_threshold"] = max(700, int(entry["motion_threshold"]) - 60)
+                for b in (norm_boxes or [])[:2]:
+                    nx, ny, nw, nh = b
+                    entry["true_zones"].append({
+                        "x1": round(max(0.0, nx - 0.05), 3),
+                        "y1": round(max(0.0, ny - 0.05), 3),
+                        "x2": round(min(1.0, nx + nw + 0.05), 3),
+                        "y2": round(min(1.0, ny + nh + 0.05), 3),
+                    })
+                    entry["true_zones"] = entry["true_zones"][-20:]
+            self._save()
+            return dict(entry)
+
+    def get_summary(self) -> dict:
+        with self.lock:
+            total_true = sum(int(v.get("true_count", 0)) for v in self.data.values())
+            total_false = sum(int(v.get("false_count", 0)) for v in self.data.values())
+            zones_blocked = sum(
+                1 for v in self.data.values() for z in v.get("false_zones", []) if z.get("hits", 0) >= 2
+            )
+            return {
+                "total_true": total_true,
+                "total_false": total_false,
+                "zones_blocked": zones_blocked,
+                "lenses": dict(self.data),
+            }
+
+    def reset(self):
+        with self.lock:
+            self.data = {}
+            self._save()
+
+
 class FaceAndPlateEnhancer:
     """Nhận diện & phóng to có chọn lọc trên đối tượng ĐANG CHUYỂN ĐỘNG: Người (từ vai lên) & Xe + Biển số."""
 
@@ -61,6 +193,33 @@ class FaceAndPlateEnhancer:
             c = cv2.CascadeClassifier(path)
             return c if not c.empty() else None
         return None
+
+    @staticmethod
+    def read_plate_text_hint(plate_crop: np.ndarray) -> str:
+        """Đọc gợi ý ký tự biển số bằng Tesseract OCR (nếu đã cài tesseract-ocr trên Ubuntu)."""
+        if plate_crop is None or plate_crop.size == 0 or shutil.which("tesseract") is None:
+            return ""
+        try:
+            gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+            gray = cv2.resize(gray, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            proc = subprocess.run(
+                [
+                    "tesseract", "stdin", "stdout",
+                    "--psm", "6",
+                    "-c", "tessedit_char_whitelist=0123456789ABCDEFGHKLMNPSTUVXYZ-.",
+                ],
+                input=cv2.imencode(".png", bw)[1].tobytes(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+            )
+            raw = proc.stdout.decode("utf-8", errors="ignore").strip()
+            cleaned = re.sub(r"[^0-9A-Z.-]+", " ", raw.upper()).strip()
+            alnum_len = len(re.sub(r"[^0-9A-Z]", "", cleaned))
+            return cleaned[:22] if alnum_len >= 5 else ""
+        except Exception:
+            return ""
 
     @staticmethod
     def _make_square_box(x1: int, y1: int, x2: int, y2: int, img_w: int, img_h: int):
@@ -259,9 +418,12 @@ class FaceAndPlateEnhancer:
                     enhanced_plate = self.enhance_zoom_crop(img[gpy1:gpy2, gpx1:gpx2], min_width=440, is_plate=True)
                     out_plate = f"snapshots/{prefix}_plate{vehicle_count}.jpg"
                     cv2.imwrite(out_plate, enhanced_plate, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                    plate_hint = self.read_plate_text_hint(enhanced_plate)
+                    lbl = f"🔢 Biển số xe (Gợi ý: {plate_hint})" if plate_hint else "🔢 Biển số xe (Phóng to)"
                     details.append({
                         "kind": "plate",
-                        "label": "🔢 Biển số xe (Phóng to)",
+                        "label": lbl,
+                        "text_hint": plate_hint,
                         "url": f"/{out_plate}",
                     })
 
@@ -269,24 +431,26 @@ class FaceAndPlateEnhancer:
 
 
 class RollingH264Writer:
-    """Ghi video dài (30-60 phút/tệp) chuẩn H.264 fMP4 xem được ngay cả khi đang ghi."""
+    """Ghi video dài (30-60 phút/tệp) bất đồng bộ bằng hàng đợi riêng để không bao giờ làm trễ luồng trực tiếp."""
 
     def __init__(self, cam_id: str, segment_seconds: int = 1800):
         self.cam_id = cam_id
         self.segment_seconds = max(1800, min(3600, segment_seconds))
         self.proc = None
         self.seg_start = 0.0
-        self.lock = threading.Lock()
         self.out_dir = os.path.join("recordings", cam_id)
         os.makedirs(self.out_dir, exist_ok=True)
+        self._q = queue.Queue(maxsize=2)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._thread.start()
 
     def _open_new_segment(self):
-        self.close()
+        self._close_proc()
         ts_name = now_vn().strftime("%Y%m%d_%H%M%S")
         out_path = os.path.join(self.out_dir, f"continuous_{ts_name}.mp4")
         cmd = [
-            "ffmpeg", "-nostdin",
-            "-noautorotate", "-hide_banner", "-loglevel", "error", "-y",
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", "4", "-i", "-",
             "-vf", "scale='min(720,iw)':-2",
             "-c:v", "libx264", "-preset", "superfast", "-crf", "33",
@@ -303,8 +467,14 @@ class RollingH264Writer:
         except Exception:
             self.proc = None
 
-    def write_frame(self, jpg_bytes: bytes):
-        with self.lock:
+    def _writer_loop(self):
+        while not self._stop.is_set():
+            try:
+                jpg_bytes = self._q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if jpg_bytes is None:
+                break
             now = time.time()
             if self.proc is None or self.proc.poll() is not None or (now - self.seg_start >= self.segment_seconds):
                 self._open_new_segment()
@@ -313,9 +483,22 @@ class RollingH264Writer:
                     self.proc.stdin.write(jpg_bytes)
                     self.proc.stdin.flush()
                 except Exception:
-                    self.close()
+                    self._close_proc()
 
-    def close(self):
+    def write_frame(self, jpg_bytes: bytes):
+        if self._stop.is_set():
+            return
+        if self._q.full():
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                pass
+        try:
+            self._q.put_nowait(jpg_bytes)
+        except queue.Full:
+            pass
+
+    def _close_proc(self):
         if self.proc is not None:
             try:
                 if self.proc.stdin:
@@ -327,6 +510,14 @@ class RollingH264Writer:
                 except Exception:
                     pass
             self.proc = None
+
+    def close(self):
+        self._stop.set()
+        try:
+            self._q.put_nowait(None)
+        except Exception:
+            pass
+        self._close_proc()
 
 
 class EventClipManager:
@@ -419,6 +610,7 @@ class CameraAIProcessor:
         self.hog = cv2.HOGDescriptor()
         self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
         self.enhancer = FaceAndPlateEnhancer()
+        self.learner = AdaptiveAILearner()
 
         self.recorders = {}
         self.clip_managers = {}
@@ -709,6 +901,7 @@ class CameraAIProcessor:
                     break
                 last_data_ts[0] = time.time()
                 buf.extend(chunk)
+                latest_jpg = None
                 while True:
                     start = buf.find(b"\xff\xd8")
                     if start == -1:
@@ -720,9 +913,10 @@ class CameraAIProcessor:
                         if start > 0:
                             del buf[:start]
                         break
-                    jpg = bytes(buf[start : end + 2])
+                    latest_jpg = bytes(buf[start : end + 2])
                     del buf[: end + 2]
-                    yield jpg
+                if latest_jpg is not None:
+                    yield latest_jpg
         finally:
             try:
                 proc.terminate()
@@ -768,9 +962,11 @@ class CameraAIProcessor:
         if st["frames_seen"] <= 6:
             return
         fg_clean = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        has_motion = cv2.countNonZero(fg_clean) > 900
+        learned_thresh = self.learner.get_motion_threshold(cam_id, lens_idx)
+        has_motion = cv2.countNonZero(fg_clean) > learned_thresh
 
         person_boxes = []
+        norm_boxes = []
         if has_motion:
             cnts, _ = cv2.findContours(fg_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             ih, iw = lens_img.shape[:2]
@@ -778,7 +974,13 @@ class CameraAIProcessor:
             for c in cnts:
                 if cv2.contourArea(c) >= 1200:
                     bx, by, bw, bh = cv2.boundingRect(c)
-                    person_boxes.append((int(bx * sx), int(by * sy), int(bw * sx), int(bh * sy)))
+                    rx, ry, rw, rh = int(bx * sx), int(by * sy), int(bw * sx), int(bh * sy)
+                    nb = (rx / float(max(1, iw)), ry / float(max(1, ih)), rw / float(max(1, iw)), rh / float(max(1, ih)))
+                    if not self.learner.is_in_false_zone(cam_id, lens_idx, nb):
+                        person_boxes.append((rx, ry, rw, rh))
+                        norm_boxes.append(nb)
+            if not person_boxes:
+                has_motion = False
 
         # Thu thập chuỗi khung hình trong 3.5 giây khi có chuyển động để chọn ảnh sắc nét & đầy đủ nhất trước khi gửi Telegram
         if has_motion and not st["burst_active"] and (now - st["last_motion_alert"] > 30.0):
@@ -797,13 +999,16 @@ class CameraAIProcessor:
                 sharp = float(cv2.Laplacian(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()) if roi.size > 0 else 0.0
                 # Ưu tiên khung hình đối tượng nằm gọn trong ảnh (không bị cắt nửa người/xe ở sát mép) + độ nét cao
                 margin_ok = 1.0 if (bx > 8 and by > 8 and (bx + bw) < (iw - 8) and (by + bh) < (ih - 8)) else 0.45
-                score = (bw * bh) * margin_ok * (1.0 + min(3.0, sharp / 120.0))
+                nb_best = (bx / float(max(1, iw)), by / float(max(1, ih)), bw / float(max(1, iw)), bh / float(max(1, ih)))
+                z_bonus = self.learner.zone_bonus(cam_id, lens_idx, nb_best)
+                score = (bw * bh) * margin_ok * z_bonus * (1.0 + min(3.0, sharp / 120.0))
                 if st["burst_best"] is None or score > st["burst_best"]["score"]:
                     st["burst_best"] = {
                         "score": score,
                         "img": lens_img.copy(),
                         "jpg": lens_jpg,
                         "boxes": list(person_boxes),
+                        "norm_boxes": list(norm_boxes),
                     }
 
             if (now - st["burst_start"]) >= 3.5:
@@ -827,10 +1032,13 @@ class CameraAIProcessor:
                     "id": f"motion_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
                     "type": "motion",
                     "cam_id": cam_id,
+                    "lens_idx": lens_idx,
                     "cam_name": label_name,
                     "message": f"Phát hiện chuyển động tại {label_name}",
                     "snapshot": f"/{snap_file}",
                     "detail_snapshots": details,
+                    "norm_boxes": best.get("norm_boxes", []),
+                    "feedback": None,
                     "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
                 })
 
@@ -873,10 +1081,13 @@ class CameraAIProcessor:
                         "id": f"fall_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
                         "type": "fall",
                         "cam_id": cam_id,
+                        "lens_idx": lens_idx,
                         "cam_name": label_name,
                         "message": f"KHẨN CẤP: Phát hiện người bị té ngã tại {label_name}!",
                         "snapshot": f"/{snap_file}",
                         "detail_snapshots": details,
+                        "norm_boxes": norm_boxes,
+                        "feedback": None,
                         "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     st["last_fall_alert"] = now
