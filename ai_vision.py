@@ -1016,6 +1016,29 @@ class CameraAIProcessor:
         dy = abs(mid_shoulder_y - mid_hip_y) + 1e-6
         return math.degrees(math.atan2(dx, dy))
 
+    @staticmethod
+    def _has_object_structure(small_bgr: np.ndarray, box: tuple) -> bool:
+        """Phân biệt vật thể thật (người/xe có đường nét) với vùng loá đèn pha trên nền xi măng/tường."""
+        x, y, w, h = box
+        ih, iw = small_bgr.shape[:2]
+        x1, y1 = max(0, x), max(0, y)
+        x2, y2 = min(iw, x + w), min(ih, y + h)
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            return False
+        area = (x2 - x1) * (y2 - y1)
+        # Bỏ qua vùng quá lớn (> 38% khung hình) thường do đèn pha quét toàn sân hoặc đổi ngày/đêm
+        if area > int(iw * ih * 0.38):
+            return False
+        roi = small_bgr[y1:y2, x1:x2]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 40, 120)
+        edge_ratio = cv2.countNonZero(edges) / float(max(1, area))
+        mean_luma = float(np.mean(gray))
+        # Vùng loá sáng trắng bệt hoặc vệt sáng mịn trên nền sân có rất ít đường nét cạnh
+        if mean_luma > 225.0 and edge_ratio < 0.035:
+            return False
+        return edge_ratio >= 0.018
+
     def _detect_fall_opencv_smart(self, small_bgr: np.ndarray, fg_clean: np.ndarray, st: dict, now: float) -> bool:
         """
         Phát hiện té ngã thông minh bằng OpenCV khi chưa có MediaPipe:
@@ -1029,7 +1052,9 @@ class CameraAIProcessor:
         area = cv2.contourArea(largest)
         if area < 2400:
             return False
-        _, y, w, h = cv2.boundingRect(largest)
+        fx, y, w, h = cv2.boundingRect(largest)
+        if not self._has_object_structure(small_bgr, (fx, y, w, h)):
+            return False
         aspect = w / float(h + 1e-6)
 
         # Ghi nhận trạng thái dáng đứng trước đó (h > w * 1.15 hoặc phát hiện người bằng HOG)
@@ -1266,14 +1291,26 @@ class CameraAIProcessor:
         st["frames_seen"] += 1
 
         small = cv2.resize(lens_img, (480, 270))
+        cur_luma = float(np.mean(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)))
+        prev_luma = st.get("prev_luma")
+        st["prev_luma"] = cur_luma
+        luma_jump = (prev_luma is not None) and (abs(cur_luma - prev_luma) > 18.0)
+
         h_start = st["horizontal_start_time"]
-        lr = 0.0 if (h_start is not None and (now - h_start) < 10.0) else -1.0
+        lr = 0.25 if luma_jump else (0.0 if (h_start is not None and (now - h_start) < 10.0) else -1.0)
         fg_mask = st["bg"].apply(small, learningRate=lr)
         if st["frames_seen"] <= 6:
             return
         fg_clean = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        fg_pixels = cv2.countNonZero(fg_clean)
+        # Bỏ qua khi ánh sáng đèn pha quét ngập >45% khung hình hoặc độ sáng toàn cảnh nhảy vọt
+        if luma_jump or (fg_pixels > int(480 * 270 * 0.45)):
+            st["burst_active"] = False
+            st["burst_best"] = None
+            return
+
         learned_thresh = self.learner.get_motion_threshold(cam_id, lens_idx)
-        has_motion = cv2.countNonZero(fg_clean) > learned_thresh
+        has_motion = fg_pixels > learned_thresh
 
         person_boxes = []
         norm_boxes = []
@@ -1284,6 +1321,8 @@ class CameraAIProcessor:
             for c in cnts:
                 if cv2.contourArea(c) >= 1200:
                     bx, by, bw, bh = cv2.boundingRect(c)
+                    if not self._has_object_structure(small, (bx, by, bw, bh)):
+                        continue
                     rx, ry, rw, rh = int(bx * sx), int(by * sy), int(bw * sx), int(bh * sy)
                     nb = (rx / float(max(1, iw)), ry / float(max(1, ih)), rw / float(max(1, iw)), rh / float(max(1, ih)))
                     if not self.learner.is_in_false_zone(cam_id, lens_idx, nb):
