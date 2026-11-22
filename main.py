@@ -1146,7 +1146,11 @@ def camera_snapshot(cam_id: str, lens: int = Query(0, ge=0, le=4), user: dict = 
     frame = ai_engine.get_latest_frame(cam_id, lens=lens)
     if not frame:
         frame = ai_engine.build_placeholder_jpeg(row[0], "Dang cho tin hieu RTSP tu camera...")
-    return Response(content=frame, media_type="image/jpeg")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/api/cameras/{cam_id}/mjpeg")
@@ -1161,10 +1165,20 @@ def camera_mjpeg_stream(cam_id: str, lens: int = Query(0, ge=0, le=4), user: dic
         placeholder = ai_engine.build_placeholder_jpeg(cam_name, "Dang ket noi luong RTSP...")
         while True:
             frame = ai_engine.get_latest_frame(cam_id, lens=lens) or placeholder
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-            time.sleep(0.2)
+            header = (
+                f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n"
+            ).encode("ascii")
+            yield header + frame + b"\r\n"
+            time.sleep(0.25)
 
-    return StreamingResponse(_gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingResponse(
+        _gen(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def get_onvif_ptz(cam_id: str):
