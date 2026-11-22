@@ -1309,8 +1309,71 @@ async def push_two_way_audio(cam_id: str, audio: UploadFile = File(...), user: d
 
 
 # --- DEVICE HEALTH, STORAGE, RECORDINGS & ALERTS ---
+def _read_cpu_ram_gpu() -> dict:
+    cpu_pct = 0.0
+    ram_pct = 0.0
+    cores = os.cpu_count() or 1
+    try:
+        import psutil
+        cpu_pct = round(psutil.cpu_percent(interval=0.1), 1)
+        ram_pct = round(psutil.virtual_memory().percent, 1)
+    except Exception:
+        try:
+            load1 = os.getloadavg()[0]
+            cpu_pct = round(min(100.0, (load1 / max(1, cores)) * 100.0), 1)
+        except Exception:
+            pass
+        try:
+            mem = {}
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    k, v = line.split(":", 1)
+                    mem[k.strip()] = int(v.strip().split()[0])
+            if mem.get("MemTotal"):
+                used_kb = mem["MemTotal"] - mem.get("MemAvailable", mem.get("MemFree", 0))
+                ram_pct = round((used_kb / mem["MemTotal"]) * 100.0, 1)
+        except Exception:
+            pass
+
+    gpu_name = "ARM SoC GPU"
+    gpu_pct = None
+    # Đọc thông số GPU Adreno / Mali trên Android nếu kernel cho phép
+    for path in (
+        "/sys/class/kgsl/kgsl-3d0/gpu_model",
+        "/sys/devices/platform/soc/3d00000.qcom,kgsl-3d0/kgsl/kgsl-3d0/gpu_model",
+    ):
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    gpu_name = f.read().strip()[:28] or gpu_name
+                    break
+        except Exception:
+            pass
+    for path in (
+        "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
+        "/sys/class/misc/mali0/device/utilization",
+    ):
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    val = re.findall(r"\d+", f.read())
+                    if val:
+                        gpu_pct = int(val[0])
+                        break
+        except Exception:
+            pass
+    return {
+        "cpu_pct": cpu_pct,
+        "cpu_cores": cores,
+        "ram_pct": ram_pct,
+        "gpu_name": gpu_name,
+        "gpu_pct": gpu_pct,
+    }
+
+
 @app.get("/api/system/health")
 def get_device_health(user: dict = Depends(get_current_user)):
+    sys_info = _read_cpu_ram_gpu()
     try:
         raw = subprocess.check_output(
             ["termux-battery-status"],
@@ -1323,6 +1386,7 @@ def get_device_health(user: dict = Depends(get_current_user)):
             "temperature": info.get("temperature", 35.0),
             "status": info.get("status", "OPTIMAL"),
             "ai_engine": ai_engine.active_engine_label,
+            **sys_info,
         }
     except Exception:
         temp = ai_engine._read_device_temp() or 35.0
@@ -1331,6 +1395,7 @@ def get_device_health(user: dict = Depends(get_current_user)):
             "temperature": round(temp, 1),
             "status": "OPTIMAL",
             "ai_engine": ai_engine.active_engine_label,
+            **sys_info,
         }
 
 
@@ -1396,6 +1461,7 @@ def update_retention(req: RetentionUpdate, admin: dict = Depends(require_admin))
 
 @app.get("/api/recordings")
 def list_recordings(user: dict = Depends(get_current_user)):
+    from ai_vision import VN_TZ
     items = []
     for root, _, files in os.walk("recordings"):
         for f in files:
@@ -1406,12 +1472,21 @@ def list_recordings(user: dict = Depends(get_current_user)):
                     size_mb = round(os.path.getsize(full_path) / (1024**2), 2)
                 except OSError:
                     continue
+                lower = f.lower()
+                if lower.startswith("fall_"):
+                    category, label = "fall", "Té ngã (~60s)"
+                elif lower.startswith("motion_"):
+                    category, label = "motion", "Chuyển động (~60s)"
+                else:
+                    category, label = "continuous", "Video dài (30p)"
                 items.append({
                     "_mtime": mtime,
                     "filename": f,
+                    "category": category,
+                    "label": label,
                     "url": "/" + full_path.replace("\\", "/"),
                     "size_mb": size_mb,
-                    "created_at": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    "created_at": datetime.fromtimestamp(mtime, VN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 })
     items.sort(key=lambda x: x["_mtime"], reverse=True)
     for item in items:
