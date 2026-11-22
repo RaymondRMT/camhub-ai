@@ -498,7 +498,7 @@ class RollingH264Writer:
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", "4", "-i", "-",
             "-vf", "scale='min(720,iw)':-2",
-            "-c:v", "libx264", "-preset", "superfast", "-crf", "33",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "16", "-crf", "33",
             "-maxrate", "600k", "-bufsize", "1200k",
             "-pix_fmt", "yuv420p",
             "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
@@ -1014,7 +1014,7 @@ class CameraAIProcessor:
 
         def _watchdog():
             while not stop_event.is_set() and proc.poll() is None:
-                if time.time() - last_data_ts[0] > 12.0:
+                if time.time() - last_data_ts[0] > 20.0:
                     try:
                         proc.kill()
                     except Exception:
