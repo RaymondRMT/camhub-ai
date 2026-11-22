@@ -6,6 +6,7 @@ import math
 import json
 import uuid
 import shutil
+import socket
 import urllib.request
 import subprocess
 import threading
@@ -658,6 +659,8 @@ class CameraAIProcessor:
 
         self.recorders = {}
         self.clip_managers = {}
+        self.audio_subs = {}  # cam_id -> set of queue.Queue
+        self.audio_lock = threading.Lock()
         self.long_clip_sec = int(os.environ.get("CAMHUB_LONG_CLIP_SEC", "1800"))
         self.active_engine_label = self._resolve_engine_label()
         threading.Thread(target=self._thermal_guard_loop, daemon=True).start()
@@ -748,7 +751,8 @@ class CameraAIProcessor:
             daemon=True,
         )
         with self.workers_lock:
-            self.recorders[cam_id] = RollingH264Writer(cam_id, segment_seconds=self.long_clip_sec)
+            if not self.has_ffmpeg_cli:
+                self.recorders[cam_id] = RollingH264Writer(cam_id, segment_seconds=self.long_clip_sec)
             self.clip_managers[cam_id] = EventClipManager(cam_id, pre_seconds=15, post_seconds=45)
             self.workers[cam_id] = (stop_event, t)
         t.start()
@@ -869,6 +873,32 @@ class CameraAIProcessor:
         sudden_drop = (prev_h > 45) and (h < prev_h * 0.65)
         return (aspect > 1.38) and (had_upright or sudden_drop)
 
+    def subscribe_audio(self, cam_id: str) -> queue.Queue:
+        q = queue.Queue(maxsize=32)
+        with self.audio_lock:
+            self.audio_subs.setdefault(cam_id, set()).add(q)
+        return q
+
+    def unsubscribe_audio(self, cam_id: str, q: queue.Queue):
+        with self.audio_lock:
+            subs = self.audio_subs.get(cam_id)
+            if subs:
+                subs.discard(q)
+
+    def _broadcast_audio(self, cam_id: str, chunk: bytes):
+        with self.audio_lock:
+            subs = list(self.audio_subs.get(cam_id, ()))
+        for q in subs:
+            if q.full():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    pass
+            try:
+                q.put_nowait(chunk)
+            except queue.Full:
+                pass
+
     def _detect_lens_count(self, frame: np.ndarray) -> int:
         h, w = frame.shape[:2]
         if w <= 0:
@@ -887,10 +917,15 @@ class CameraAIProcessor:
         step = h // lens_count
         return [frame[i * step : (i + 1) * step if i < lens_count - 1 else h] for i in range(lens_count)]
 
-    def _spawn_ffmpeg_mjpeg(self, rtsp_url: str, transport: str):
+    def _spawn_ffmpeg_mjpeg(self, rtsp_url: str, transport: str, cam_id: str, audio_port: int = 0):
+        rec_dir = os.path.join("recordings", cam_id)
+        os.makedirs(rec_dir, exist_ok=True)
+        seg_pattern = os.path.join(rec_dir, "continuous_%Y%m%d_%H%M%S.mp4")
+
         cmd = [
             "ffmpeg",
             "-nostdin",
+            "-noautorotate",
             "-hide_banner",
             "-loglevel", "error",
             "-fflags", "+nobuffer+discardcorrupt",
@@ -900,6 +935,8 @@ class CameraAIProcessor:
             "-rtsp_transport", transport,
             "-timeout", "8000000",
             "-i", rtsp_url,
+            # Đầu ra 1: MJPEG cho xem trực tuyến & AI
+            "-map", "0:v:0",
             "-an",
             "-vf", "select='not(mod(n,4))',scale='min(1920,iw)':-2,format=yuvj420p",
             "-fps_mode", "drop",
@@ -908,21 +945,73 @@ class CameraAIProcessor:
             "-vcodec", "mjpeg",
             "-q:v", "4",
             "-",
+            # Đầu ra 2: Lưu video dài 30 phút/tệp chuẩn H.264 + âm thanh AAC
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-vf", "select='not(mod(n,4))',scale='min(720,iw)':-2",
+            "-fps_mode", "drop",
+            "-c:v", "libx264", "-preset", "superfast", "-crf", "33",
+            "-maxrate", "600k", "-bufsize", "1200k",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "48k", "-ar", "16000", "-ac", "1",
+            "-f", "segment", "-segment_time", str(max(1800, min(3600, self.long_clip_sec))),
+            "-strftime", "1", "-reset_timestamps", "1",
+            "-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof",
+            seg_pattern,
         ]
+        if audio_port > 0:
+            cmd.extend([
+                # Đầu ra 3: Âm thanh trực tuyến MP3 gửi qua UDP nội bộ
+                "-map", "0:a",
+                "-vn",
+                "-c:a", "libmp3lame", "-b:a", "32k", "-ar", "16000", "-ac", "1",
+                "-f", "mp3",
+                f"udp://127.0.0.1:{audio_port}?pkt_size=1024",
+            ])
+
+        env = os.environ.copy()
+        env["TZ"] = "Asia/Ho_Chi_Minh"
         return subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             bufsize=0,
+            env=env,
         )
 
-    def _iter_ffmpeg_jpegs(self, rtsp_url: str, transport: str, stop_event: threading.Event):
-        proc = self._spawn_ffmpeg_mjpeg(rtsp_url, transport)
+    def _iter_ffmpeg_jpegs(self, rtsp_url: str, transport: str, stop_event: threading.Event, cam_id: str, with_audio: bool = True):
+        audio_sock = None
+        audio_port = 0
+        if with_audio:
+            try:
+                audio_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                audio_sock.bind(("127.0.0.1", 0))
+                audio_sock.settimeout(0.5)
+                audio_port = audio_sock.getsockname()[1]
+            except Exception:
+                audio_port = 0
+                if audio_sock:
+                    audio_sock.close()
+                    audio_sock = None
+
+        proc = self._spawn_ffmpeg_mjpeg(rtsp_url, transport, cam_id, audio_port=audio_port)
         buf = bytearray()
         last_data_ts = [time.time()]
 
-        # Watchdog: tự ngắt nếu ffmpeg bị treo không trả frame quá 12 giây
+        if audio_sock is not None:
+            def _audio_rx():
+                while not stop_event.is_set() and proc.poll() is None:
+                    try:
+                        pkt, _ = audio_sock.recvfrom(4096)
+                        if pkt:
+                            self._broadcast_audio(cam_id, pkt)
+                    except socket.timeout:
+                        continue
+                    except Exception:
+                        break
+            threading.Thread(target=_audio_rx, daemon=True).start()
+
         def _watchdog():
             while not stop_event.is_set() and proc.poll() is None:
                 if time.time() - last_data_ts[0] > 12.0:
@@ -968,6 +1057,11 @@ class CameraAIProcessor:
             except Exception:
                 try:
                     proc.kill()
+                except Exception:
+                    pass
+            if audio_sock is not None:
+                try:
+                    audio_sock.close()
                 except Exception:
                     pass
 
@@ -1187,7 +1281,7 @@ class CameraAIProcessor:
         self.active_engine_label = engine_name
 
         rec = self.recorders.get(cam_id)
-        if rec is not None and self.has_ffmpeg_cli:
+        if rec is not None and not self.has_ffmpeg_cli:
             rec.write_frame(jpg_bytes)
         cm = self.clip_managers.get(cam_id)
         if cm is not None and self.has_ffmpeg_cli:
@@ -1258,7 +1352,8 @@ class CameraAIProcessor:
                     src_url, transport = sources[src_idx % len(sources)]
                     state["force_reconnect"] = False
                     state["last_unique_ts"] = time.time()
-                    for jpg in self._iter_ffmpeg_jpegs(src_url, transport, stop_event):
+                    with_audio = state.get("with_audio", True)
+                    for jpg in self._iter_ffmpeg_jpegs(src_url, transport, stop_event, cam_id, with_audio=with_audio):
                         got_frame = True
                         retry_delay = 3.0
                         self._analyze_frame(
@@ -1267,7 +1362,11 @@ class CameraAIProcessor:
                         if state.get("force_reconnect"):
                             break
                     if not got_frame:
-                        src_idx += 1
+                        if with_audio:
+                            state["with_audio"] = False
+                        else:
+                            state["with_audio"] = True
+                            src_idx += 1
                 else:
                     cap = cv2.VideoCapture(rtsp_url)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
