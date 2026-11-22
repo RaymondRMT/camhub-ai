@@ -42,6 +42,193 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stime
 
 
 
+
+class FaceAndPlateEnhancer:
+    """Nhận diện Gương mặt/Đầu (kể cả đeo khẩu trang, đội nón) & Biển số xe, phóng to + làm nét AI."""
+
+    def __init__(self):
+        data_dir = getattr(getattr(cv2, "data", None), "haarcascades", "")
+        self.face_frontal = self._load_cascade(data_dir, "haarcascade_frontalface_alt2.xml")
+        self.face_profile = self._load_cascade(data_dir, "haarcascade_profileface.xml")
+        self.upper_body = self._load_cascade(data_dir, "haarcascade_upperbody.xml")
+        self.plate_cascade = self._load_cascade(data_dir, "haarcascade_russian_plate_number.xml")
+
+    @staticmethod
+    def _load_cascade(data_dir: str, filename: str):
+        if not data_dir:
+            return None
+        path = os.path.join(data_dir, filename)
+        if os.path.exists(path):
+            c = cv2.CascadeClassifier(path)
+            return c if not c.empty() else None
+        return None
+
+    @staticmethod
+    def enhance_zoom_crop(crop: np.ndarray, min_width: int = 420) -> np.ndarray:
+        """Phóng to thông minh LANCZOS4 + khử nhiễu giữ biên + cân bằng tương phản CLAHE + làm nét Unsharp."""
+        if crop is None or crop.size == 0:
+            return crop
+        h, w = crop.shape[:2]
+        if w < min_width:
+            scale = min_width / float(max(1, w))
+            new_w = max(2, int(round(w * scale)))
+            new_h = max(2, int(round(h * scale)))
+            crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+
+        # Khử nhiễu nén JPEG nhưng giữ nguyên cạnh chữ/mắt
+        denoised = cv2.bilateralFilter(crop, d=5, sigmaColor=42, sigmaSpace=42)
+
+        # Cân bằng sáng cục bộ (hữu ích khi đội nón bị tối mặt hoặc biển số chói nắng)
+        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(4, 4))
+        l_eq = clahe.apply(l_ch)
+        balanced = cv2.cvtColor(cv2.merge((l_eq, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
+
+        # Unsharp Mask làm nét chi tiết nhỏ
+        blur = cv2.GaussianBlur(balanced, (0, 0), sigmaX=1.35)
+        sharpened = cv2.addWeighted(balanced, 1.55, blur, -0.55, 0)
+        return sharpened
+
+    @staticmethod
+    def _expand_box(x: int, y: int, w: int, h: int, img_w: int, img_h: int, pad: float = 0.28):
+        dx = int(w * pad)
+        dy = int(h * pad)
+        x1 = max(0, x - dx)
+        y1 = max(0, y - dy)
+        x2 = min(img_w, x + w + dx)
+        y2 = min(img_h, y + h + dy)
+        return x1, y1, x2, y2
+
+    @staticmethod
+    def _iou(box_a, box_b) -> float:
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        if ix2 <= ix1 or iy2 <= iy1:
+            return 0.0
+        inter = (ix2 - ix1) * (iy2 - iy1)
+        area = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+        return inter / float(max(1, area))
+
+    def _dedup_boxes(self, boxes: list, limit: int = 2) -> list:
+        out = []
+        for b in boxes:
+            if all(self._iou(b, prev) < 0.35 for prev in out):
+                out.append(b)
+                if len(out) >= limit:
+                    break
+        return out
+
+    def detect_faces_or_heads(self, img: np.ndarray, person_boxes: Optional[list] = None) -> list:
+        """Tìm gương mặt (thẳng/nghiêng) và vùng đầu-mặt khi đeo khẩu trang/nón."""
+        h, w = img.shape[:2]
+        gray = cv2.equalizeHist(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+        raw_boxes = []
+
+        if self.face_frontal is not None:
+            for (fx, fy, fw, fh) in self.face_frontal.detectMultiScale(gray, 1.12, 4, minSize=(26, 26)):
+                raw_boxes.append(self._expand_box(fx, fy, fw, fh, w, h, pad=0.32))
+
+        if self.face_profile is not None:
+            for (fx, fy, fw, fh) in self.face_profile.detectMultiScale(gray, 1.15, 4, minSize=(26, 26)):
+                raw_boxes.append(self._expand_box(fx, fy, fw, fh, w, h, pad=0.32))
+
+        # Nếu đeo khẩu trang/nón che mất mặt chuẩn, lấy vùng đầu từ upper-body hoặc khung người chuyển động
+        if not raw_boxes and self.upper_body is not None:
+            for (ux, uy, uw, uh) in self.upper_body.detectMultiScale(gray, 1.12, 3, minSize=(55, 55)):
+                head_h = int(uh * 0.48)
+                head_w = int(uw * 0.52)
+                head_x = ux + (uw - head_w) // 2
+                raw_boxes.append(self._expand_box(head_x, uy, head_w, head_h, w, h, pad=0.22))
+
+        if not raw_boxes and person_boxes:
+            for (px, py, pw, ph) in person_boxes:
+                if ph > pw * 0.9 and ph >= 50:
+                    head_h = max(28, int(ph * 0.30))
+                    head_w = max(28, int(pw * 0.65))
+                    head_x = px + (pw - head_w) // 2
+                    raw_boxes.append(self._expand_box(head_x, py, head_w, head_h, w, h, pad=0.25))
+
+        return self._dedup_boxes(raw_boxes, limit=2)
+
+    def detect_license_plates(self, img: np.ndarray) -> list:
+        """Tìm biển số xe (1 dòng & 2 dòng) bằng Haar + hình học mật độ cạnh."""
+        h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        candidates = []
+
+        if self.plate_cascade is not None:
+            for (px, py, pw, ph) in self.plate_cascade.detectMultiScale(gray, 1.12, 4, minSize=(42, 16)):
+                if 1.1 <= (pw / float(max(1, ph))) <= 5.5:
+                    candidates.append(self._expand_box(px, py, pw, ph, w, h, pad=0.22))
+
+        # Bổ sung phát hiện hình chữ nhật biển số có mật độ nét chữ cao (biển 1 dòng & 2 dòng VN)
+        if not candidates:
+            rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 5))
+            blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rect_kernel)
+            grad_x = cv2.Sobel(blackhat, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=3)
+            grad_x = np.absolute(grad_x)
+            max_v = float(np.max(grad_x)) or 1.0
+            grad_x = np.uint8(255.0 * (grad_x / max_v))
+            grad_x = cv2.GaussianBlur(grad_x, (5, 5), 0)
+            grad_x = cv2.morphologyEx(grad_x, cv2.MORPH_CLOSE, rect_kernel)
+            _, thresh = cv2.threshold(grad_x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            thresh = cv2.erode(thresh, None, iterations=1)
+            thresh = cv2.dilate(thresh, None, iterations=2)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:12]
+            for c in contours:
+                cx, cy, cw, ch = cv2.boundingRect(c)
+                ratio = cw / float(max(1, ch))
+                area = cw * ch
+                # Bỏ qua vùng quá nhỏ/quá lớn hoặc góc trên cùng (nơi chứa dòng đồng hồ OSD camera)
+                if cy < int(h * 0.14):
+                    continue
+                if 1200 <= area <= int(w * h * 0.12) and (1.15 <= ratio <= 5.2):
+                    roi = gray[cy : cy + ch, cx : cx + cw]
+                    if roi.size > 0 and float(np.std(roi)) > 36.0:
+                        candidates.append(self._expand_box(cx, cy, cw, ch, w, h, pad=0.18))
+
+        return self._dedup_boxes(candidates, limit=2)
+
+    def extract_detail_crops(
+        self,
+        img: np.ndarray,
+        prefix: str,
+        person_boxes: Optional[list] = None,
+    ) -> list:
+        """Trích xuất & làm nét ảnh gương mặt/đầu và biển số xe, trả về danh sách dict chi tiết."""
+        if img is None or img.size == 0:
+            return []
+        details = []
+
+        for idx, (x1, y1, x2, y2) in enumerate(self.detect_faces_or_heads(img, person_boxes), start=1):
+            crop = img[y1:y2, x1:x2]
+            enhanced = self.enhance_zoom_crop(crop, min_width=420)
+            out_file = f"snapshots/{prefix}_face{idx}.jpg"
+            cv2.imwrite(out_file, enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            details.append({
+                "kind": "face",
+                "label": "👤 Gương mặt / Đầu (Đã phóng to & làm nét)",
+                "url": f"/{out_file}",
+            })
+
+        for idx, (x1, y1, x2, y2) in enumerate(self.detect_license_plates(img), start=1):
+            crop = img[y1:y2, x1:x2]
+            enhanced = self.enhance_zoom_crop(crop, min_width=440)
+            out_file = f"snapshots/{prefix}_plate{idx}.jpg"
+            cv2.imwrite(out_file, enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            details.append({
+                "kind": "plate",
+                "label": "🚗 Biển số xe (Đã phóng to & làm nét)",
+                "url": f"/{out_file}",
+            })
+
+        return details
+
+
 class RollingH264Writer:
     """Ghi video dài (30-60 phút/tệp) chuẩn H.264 fMP4 xem được ngay cả khi đang ghi."""
 
@@ -192,6 +379,7 @@ class CameraAIProcessor:
         # Bộ nhận diện dáng người đứng OpenCV HOG (dùng khi không có MediaPipe model)
         self.hog = cv2.HOGDescriptor()
         self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        self.enhancer = FaceAndPlateEnhancer()
 
         self.recorders = {}
         self.clip_managers = {}
@@ -352,6 +540,7 @@ class CameraAIProcessor:
             "cam_name": cam_name,
             "message": f"[THỬ NGHIỆM] KHẨN CẤP: Phát hiện người bị té ngã tại {cam_name}!",
             "snapshot": f"/{snap_file}",
+            "detail_snapshots": [],
             "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
         }
         self.on_alert(alert_data)
@@ -539,11 +728,24 @@ class CameraAIProcessor:
         fg_clean = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         has_motion = cv2.countNonZero(fg_clean) > 900
 
+        person_boxes = []
+        if has_motion:
+            cnts, _ = cv2.findContours(fg_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            ih, iw = lens_img.shape[:2]
+            sx, sy = iw / 480.0, ih / 270.0
+            for c in cnts:
+                if cv2.contourArea(c) >= 1200:
+                    bx, by, bw, bh = cv2.boundingRect(c)
+                    person_boxes.append((int(bx * sx), int(by * sy), int(bw * sx), int(bh * sy)))
+
         if has_motion and (now - st["last_motion_alert"] > 30.0):
             ts_ms = int(now * 1000)
             snap_file = f"snapshots/motion_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
             with open(snap_file, "wb") as f:
                 f.write(lens_jpg)
+            details = self.enhancer.extract_detail_crops(
+                lens_img, f"motion_{cam_id}_L{lens_idx}_{ts_ms}", person_boxes
+            )
             cm = self.clip_managers.get(cam_id)
             if cm is not None:
                 cm.trigger_clip("motion")
@@ -554,6 +756,7 @@ class CameraAIProcessor:
                 "cam_name": label_name,
                 "message": f"Phát hiện chuyển động tại {label_name}",
                 "snapshot": f"/{snap_file}",
+                "detail_snapshots": details,
                 "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
             })
             st["last_motion_alert"] = now
@@ -587,6 +790,9 @@ class CameraAIProcessor:
                     snap_file = f"snapshots/fall_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
                     with open(snap_file, "wb") as f:
                         f.write(lens_jpg)
+                    details = self.enhancer.extract_detail_crops(
+                        lens_img, f"fall_{cam_id}_L{lens_idx}_{ts_ms}", person_boxes
+                    )
                     cm = self.clip_managers.get(cam_id)
                     if cm is not None:
                         cm.trigger_clip("fall")
@@ -597,6 +803,7 @@ class CameraAIProcessor:
                         "cam_name": label_name,
                         "message": f"KHẨN CẤP: Phát hiện người bị té ngã tại {label_name}!",
                         "snapshot": f"/{snap_file}",
+                        "detail_snapshots": details,
                         "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     st["last_fall_alert"] = now
