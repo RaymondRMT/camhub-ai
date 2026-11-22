@@ -80,10 +80,13 @@ class AdaptiveAILearner:
         if key not in self.data:
             self.data[key] = {
                 "motion_threshold": 900,
+                "plate_min_bright": 0.34,
                 "true_count": 0,
                 "false_count": 0,
+                "plate_wrong_count": 0,
                 "false_zones": [],
                 "true_zones": [],
+                "plate_bad_zones": [],
             }
         return self.data[key]
 
@@ -116,9 +119,40 @@ class AdaptiveAILearner:
                     return 1.35
         return 1.0
 
-    def record_feedback(self, cam_id: str, lens_idx: int, verdict: str, norm_boxes: Optional[list] = None) -> dict:
+    def get_plate_min_bright(self, cam_id: str, lens_idx: int) -> float:
+        with self.lock:
+            entry = self.data.get(self._key(cam_id, lens_idx))
+            return float(entry.get("plate_min_bright", 0.34)) if entry else 0.34
+
+    def is_plate_bad_zone(self, cam_id: str, lens_idx: int, rel_box: tuple) -> bool:
+        rx, ry, rw, rh = rel_box
+        cx, cy = rx + rw / 2.0, ry + rh / 2.0
+        with self.lock:
+            entry = self.data.get(self._key(cam_id, lens_idx))
+            if not entry:
+                return False
+            for z in entry.get("plate_bad_zones", []):
+                if z["x1"] <= cx <= z["x2"] and z["y1"] <= cy <= z["y2"]:
+                    return True
+        return False
+
+    def record_feedback(self, cam_id: str, lens_idx: int, verdict: str, norm_boxes: Optional[list] = None, plate_rel_boxes: Optional[list] = None) -> dict:
         with self.lock:
             entry = self._get_entry(self._key(cam_id, lens_idx))
+            if verdict == "plate_wrong":
+                entry["plate_wrong_count"] = int(entry.get("plate_wrong_count", 0)) + 1
+                entry["plate_min_bright"] = round(min(0.55, float(entry.get("plate_min_bright", 0.34)) + 0.05), 2)
+                for pb in (plate_rel_boxes or [])[:2]:
+                    rx, ry, rw, rh = pb
+                    entry.setdefault("plate_bad_zones", []).append({
+                        "x1": round(max(0.0, rx - 0.05), 3),
+                        "y1": round(max(0.0, ry - 0.05), 3),
+                        "x2": round(min(1.0, rx + rw + 0.05), 3),
+                        "y2": round(min(1.0, ry + rh + 0.05), 3),
+                    })
+                    entry["plate_bad_zones"] = entry["plate_bad_zones"][-12:]
+                self._save()
+                return dict(entry)
             if verdict == "false":
                 entry["false_count"] += 1
                 entry["motion_threshold"] = min(2600, int(entry["motion_threshold"]) + 150)
@@ -288,7 +322,7 @@ class FaceAndPlateEnhancer:
         red_pixels = cv2.countNonZero(r1) + cv2.countNonZero(r2)
         return (red_pixels / float(crop.shape[0] * crop.shape[1])) > 0.22
 
-    def _find_plate_in_vehicle(self, veh_crop: np.ndarray):
+    def _find_plate_in_vehicle(self, veh_crop: np.ndarray, min_bright: float = 0.34, cam_id: str = "", lens_idx: int = 1, learner=None):
         vh, vw = veh_crop.shape[:2]
         if vw < 40 or vh < 30:
             return None
@@ -327,7 +361,11 @@ class FaceAndPlateEnhancer:
             bright_yellow = cv2.inRange(hsv_roi, (15, 70, 115), (38, 255, 255))
             plate_bg_ratio = (cv2.countNonZero(bright_neutral) + cv2.countNonZero(bright_yellow)) / float(area)
             contrast = float(np.std(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)))
-            if plate_bg_ratio < 0.22 or contrast < 28.0:
+            rel_box = (cx / float(vw), cy / float(vh), cw / float(vw), ch / float(vh))
+            if learner is not None and learner.is_plate_bad_zone(cam_id, lens_idx, rel_box):
+                continue
+            # Yêu cầu nền trắng/vàng đặc (tránh nan hoa bánh xe)
+            if plate_bg_ratio < min_bright or contrast < 30.0:
                 continue
             score = plate_bg_ratio * contrast * min(2.0, area / 600.0)
             if score > best_score:
@@ -341,6 +379,9 @@ class FaceAndPlateEnhancer:
         img: np.ndarray,
         prefix: str,
         moving_boxes: Optional[list] = None,
+        cam_id: str = "",
+        lens_idx: int = 1,
+        learner=None,
     ) -> list:
         """Chỉ cắt từ vùng ĐANG CHUYỂN ĐỘNG: Người -> từ vai lên; Xe -> toàn xe & biển số."""
         if img is None or img.size == 0 or not moving_boxes:
@@ -373,7 +414,8 @@ class FaceAndPlateEnhancer:
             pad_vy = int(bh * 0.18)
             vx1, vy1, vx2, vy2 = self._clamp_box(bx - pad_vx, by - pad_vy, bx + bw + pad_vx, by + bh + pad_vy, iw, ih)
             veh_crop = img[vy1:vy2, vx1:vx2]
-            plate_box = self._find_plate_in_vehicle(veh_crop) if (veh_crop.size > 0 and area >= 3600) else None
+            min_b = learner.get_plate_min_bright(cam_id, lens_idx) if learner is not None else 0.34
+            plate_box = self._find_plate_in_vehicle(veh_crop, min_bright=min_b, cam_id=cam_id, lens_idx=lens_idx, learner=learner) if (veh_crop.size > 0 and area >= 3600) else None
 
             # Phân loại kết hợp:
             # - Người đi bộ đứng thẳng: ratio < 0.72 và không có biển số -> chỉ cắt người (từ vai lên)
@@ -420,10 +462,12 @@ class FaceAndPlateEnhancer:
                     cv2.imwrite(out_plate, enhanced_plate, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                     plate_hint = self.read_plate_text_hint(enhanced_plate)
                     lbl = f"🔢 Biển số xe (Gợi ý: {plate_hint})" if plate_hint else "🔢 Biển số xe (Phóng to)"
+                    vh_c, vw_c = veh_crop.shape[:2]
                     details.append({
                         "kind": "plate",
                         "label": lbl,
                         "text_hint": plate_hint,
+                        "rel_box": [round(px1 / float(max(1, vw_c)), 3), round(py1 / float(max(1, vh_c)), 3), round((px2 - px1) / float(max(1, vw_c)), 3), round((py2 - py1) / float(max(1, vh_c)), 3)],
                         "url": f"/{out_plate}",
                     })
 
@@ -1026,7 +1070,7 @@ class CameraAIProcessor:
                 with open(snap_file, "wb") as f:
                     f.write(best["jpg"])
                 details = self.enhancer.extract_detail_crops(
-                    best["img"], f"motion_{cam_id}_L{lens_idx}_{ts_ms}", best["boxes"]
+                    best["img"], f"motion_{cam_id}_L{lens_idx}_{ts_ms}", best["boxes"], cam_id=cam_id, lens_idx=lens_idx, learner=self.learner
                 )
                 self.on_alert({
                     "id": f"motion_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
@@ -1072,7 +1116,7 @@ class CameraAIProcessor:
                     with open(snap_file, "wb") as f:
                         f.write(lens_jpg)
                     details = self.enhancer.extract_detail_crops(
-                        lens_img, f"fall_{cam_id}_L{lens_idx}_{ts_ms}", person_boxes
+                        lens_img, f"fall_{cam_id}_L{lens_idx}_{ts_ms}", person_boxes, cam_id=cam_id, lens_idx=lens_idx, learner=self.learner
                     )
                     cm = self.clip_managers.get(cam_id)
                     if cm is not None:
