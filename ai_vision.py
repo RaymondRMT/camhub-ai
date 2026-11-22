@@ -61,8 +61,9 @@ class RollingH264Writer:
         cmd = [
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", "4", "-i", "-",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "29",
+            "-vf", "scale='min(720,iw)':-2",
+            "-c:v", "libx264", "-preset", "superfast", "-crf", "33",
+            "-maxrate", "600k", "-bufsize", "1200k",
             "-pix_fmt", "yuv420p",
             "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
             out_path,
@@ -153,8 +154,9 @@ class EventClipManager:
         cmd = [
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", "4", "-i", "-",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
+            "-vf", "scale='min(720,iw)':-2",
+            "-c:v", "libx264", "-preset", "superfast", "-crf", "31",
+            "-maxrate", "750k", "-bufsize", "1500k",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart",
             out_path,
         ]
