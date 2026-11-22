@@ -824,6 +824,7 @@
     let audioChunks = [];
     let activeHlsInstances = [];
     let focusHlsInstance = null;
+    let stopFocusStreamLoop = null;
     let pollTimers = [];
     let camerasCache = [];
     let alertsCache = [];
@@ -1058,6 +1059,7 @@
 
     function startAdaptiveSnapshotLoop(imgEl, snapBaseUrl, intervalMs = 500) {
       let stopped = false;
+      let nextTimer = null;
       const tick = () => {
         if (stopped || !imgEl.isConnected || imgEl.offsetParent === null) return;
         const loader = new Image();
@@ -1077,8 +1079,8 @@
           clearTimeout(guard);
           if (!stopped && imgEl.isConnected && imgEl.offsetParent !== null) {
             imgEl.src = url;
-            const t = setTimeout(tick, intervalMs);
-            safeSnapshotTimers.push(t);
+            nextTimer = setTimeout(tick, intervalMs);
+            safeSnapshotTimers.push(nextTimer);
           }
         };
         loader.onerror = () => {
@@ -1086,14 +1088,14 @@
           settled = true;
           clearTimeout(guard);
           if (!stopped && imgEl.isConnected && imgEl.offsetParent !== null) {
-            const t = setTimeout(tick, 1800);
-            safeSnapshotTimers.push(t);
+            nextTimer = setTimeout(tick, 1800);
+            safeSnapshotTimers.push(nextTimer);
           }
         };
         loader.src = url;
       };
       tick();
-      return () => { stopped = true; };
+      return () => { stopped = true; if (nextTimer) clearTimeout(nextTimer); };
     }
 
     function toggleSplitLenses() {
@@ -1116,8 +1118,9 @@
         mjpegEl.style.display = "block";
         const snapUrl = `/api/cameras/${encodeURIComponent(camId)}/snapshot?lens=${lens}&token=${encodeURIComponent(getJwtToken())}`;
         if (useSafeSnapshotMode()) {
-          startAdaptiveSnapshotLoop(mjpegEl, snapUrl, 450);
+          const stopFn = startAdaptiveSnapshotLoop(mjpegEl, snapUrl, 450);
           if (onModeChange) onModeChange(lens > 0 ? "Mắt " + lens : "Tunnel Live");
+          return { stopLoop: stopFn };
         } else {
           mjpegEl.dataset.baseStream = mjpegUrl;
           mjpegEl.onerror = () => {
@@ -1278,11 +1281,18 @@
       v.style.display = "block";
       m.style.display = "none";
       m.src = "";
+      if (stopFocusStreamLoop) { try { stopFocusStreamLoop(); } catch (_) {} stopFocusStreamLoop = null; }
+      if (stopFocusStreamLoop) { try { stopFocusStreamLoop(); } catch (_) {} stopFocusStreamLoop = null; }
       if (focusHlsInstance) { try { focusHlsInstance.destroy(); } catch (_) {} focusHlsInstance = null; }
 
-      focusHlsInstance = attachLiveStream(camId, v, m, mode => {
+      const handle = attachLiveStream(camId, v, m, mode => {
         document.getElementById("focusStreamModeBadge").innerText = mode;
       }, focusedLensIndex, cam.brand);
+      if (handle && typeof handle.stopLoop === "function") {
+        stopFocusStreamLoop = handle.stopLoop;
+      } else {
+        focusHlsInstance = handle;
+      }
 
       document.getElementById("camFocusModal").classList.add("open");
     }
