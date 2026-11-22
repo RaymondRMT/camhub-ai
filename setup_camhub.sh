@@ -52,7 +52,7 @@ install_inside_ubuntu() {
     git curl wget tar ca-certificates \
     python3 python3-pip python3-venv \
     ffmpeg libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
-    procps iproute2
+    procps iproute2 tesseract-ocr
 
   echo "[Ubuntu 2/5] Tải mã nguồn CamHub AI Pro từ GitHub..."
   if [ -d "$APP_DIR/.git" ]; then
