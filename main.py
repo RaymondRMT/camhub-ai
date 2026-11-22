@@ -1,5 +1,6 @@
 import os
 import re
+import hmac
 import time
 import json
 import uuid
@@ -17,13 +18,19 @@ import urllib.parse
 import concurrent.futures
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Tuple
-from fastapi import FastAPI, HTTPException, Depends, Header, Request, UploadFile, File
+from typing import Optional, List
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 import httpx
-import jwt
+
+try:
+    import jwt as pyjwt
+    HAS_PYJWT = True
+except Exception:
+    pyjwt = None
+    HAS_PYJWT = False
 
 try:
     from onvif import ONVIFCamera
@@ -32,75 +39,38 @@ except Exception:
     ONVIFCamera = None
     HAS_ONVIF = False
 
-from ai_vision import CameraAIProcessor
+from ai_vision import CameraAIProcessor, HAS_MEDIAPIPE
 
 os.makedirs("static", exist_ok=True)
 os.makedirs("recordings", exist_ok=True)
 os.makedirs("snapshots", exist_ok=True)
 
-DB_PATH = "camhub.db"
-SECRET_KEY_FILE = ".jwt_secret"
+DB_PATH = os.environ.get("CAMHUB_DB_PATH", "camhub.db")
+SECRET_KEY_FILE = os.environ.get("CAMHUB_SECRET_FILE", ".jwt_secret")
 ALERTS_LOG = []
 ALERTS_LOCK = threading.Lock()
 ONVIF_CLIENTS = {}
-TUNNEL_STATE = {"url": "", "status": "starting", "mode": "quick"}
+TUNNEL_STATE = {"url": "", "status": "starting", "mode": "quick", "last_error": ""}
 tunnel_process = None
 tunnel_lock = threading.Lock()
 http_async_client: Optional[httpx.AsyncClient] = None
 
-# Hỗ trợ luồng tối ưu cho từng hãng (sub = mượt nhẹ CPU cho AI & nhiều mắt cam, main = HD/FullHD)
-# Hỗ trợ tham số {ch} cho thiết bị nhiều mắt cam (Multi-lens / Dual-lens / NVR)
-BRAND_STREAM_TEMPLATES = {
-    "hikvision": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{ch}02",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{ch}01",
-    },
-    "dahua": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel={ch}&subtype=1",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel={ch}&subtype=0",
-    },
-    "imou": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel={ch}&subtype=1",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel={ch}&subtype=0",
-    },
-    "ezviz": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/h264_stream",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{ch}01",
-    },
-    "kbvision": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel={ch}&subtype=1",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel={ch}&subtype=0",
-    },
-    "yoosee": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/onvif2",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/onvif1",
-    },
-    "tapo": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/stream2",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/stream1",
-    },
-    "custom": {
-        "sub": "rtsp://{user}:{pwd}@{ip}:554/stream{ch}",
-        "main": "rtsp://{user}:{pwd}@{ip}:554/stream{ch}",
-    },
-}
-
-BRAND_RTSP_PATHS = {
-    "imou": "/cam/realmonitor?channel=1&subtype=1",
-    "dahua": "/cam/realmonitor?channel=1&subtype=1",
-    "kbvision": "/cam/realmonitor?channel=1&subtype=1",
-    "hikvision": "/Streaming/Channels/102",
-    "ezviz": "/h264_stream",
-    "yoosee": "/onvif2",
-    "tapo": "/stream2",
-    "custom": "/stream1",
+BRAND_TEMPLATES = {
+    "hikvision": "rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/102",
+    "dahua": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel=1&subtype=1",
+    "imou": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel=1&subtype=1",
+    "ezviz": "rtsp://admin:{pwd}@{ip}:554/h264_stream",
+    "kbvision": "rtsp://{user}:{pwd}@{ip}:554/cam/realmonitor?channel=1&subtype=1",
+    "yoosee": "rtsp://{user}:{pwd}@{ip}:554/onvif2",
+    "tapo": "rtsp://{user}:{pwd}@{ip}:554/stream2",
+    "custom": "rtsp://{user}:{pwd}@{ip}:554/stream1",
 }
 
 BRAND_DEFAULT_HINTS = {
     "hikvision": {
         "default_user": "admin",
-        "common_passwords": ["12345", "12345678a", "admin", "123456"],
-        "guide": "Camera đời cũ dùng '12345'; đời mới dùng mật khẩu kích hoạt hoặc mã Verification Code (6 ký tự in hoa) dưới đáy camera.",
+        "common_passwords": ["12345", "12345678a", "admin"],
+        "guide": "Camera đời mới dùng mật khẩu kích hoạt lúc cài đặt hoặc mã Verification Code (6 ký tự in hoa) dưới đáy camera.",
     },
     "dahua": {
         "default_user": "admin",
@@ -114,7 +84,7 @@ BRAND_DEFAULT_HINTS = {
     },
     "ezviz": {
         "default_user": "admin",
-        "common_passwords": ["123456", "admin", "888888"],
+        "common_passwords": ["123456", "admin"],
         "guide": "Mật khẩu mặc định bắt buộc là mã Verification Code (6 chữ cái IN HOA, VD: ABCDEF) in trên tem dán dưới chân đế camera.",
     },
     "kbvision": {
@@ -125,7 +95,7 @@ BRAND_DEFAULT_HINTS = {
     "yoosee": {
         "default_user": "admin",
         "common_passwords": ["123", "123456", "888888", "admin"],
-        "guide": "Mật khẩu RTSP mặc định là '123' hoặc '888888' (cần bật mục 'Cài đặt RTSP / NVR' trong ứng dụng Yoosee). Camera 2 mắt dùng kênh 1 & 2.",
+        "guide": "Mật khẩu RTSP mặc định là '123' hoặc '888888' (cần bật mục 'Cài đặt RTSP / NVR' trong ứng dụng Yoosee).",
     },
     "tapo": {
         "default_user": "admin",
@@ -134,15 +104,55 @@ BRAND_DEFAULT_HINTS = {
     },
     "custom": {
         "default_user": "admin",
-        "common_passwords": ["admin", "123456", "12345", "888888", "123"],
-        "guide": "Thử các mật khẩu mặc định phổ biến của chuẩn ONVIF ('admin', '123456', '888888' hoặc '123').",
+        "common_passwords": ["admin", "123456", "12345", "888888"],
+        "guide": "Thử các mật khẩu mặc định phổ biến của chuẩn ONVIF hoặc chuyển sang chế độ nhập link RTSP thủ công.",
     },
 }
 
 
+# --- JWT HELPERS (PyJWT + RFC 7519 HS256 Fallback) ---
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + padding)
+
+
+def _jwt_encode_hs256(payload: dict, secret: str) -> str:
+    if HAS_PYJWT and pyjwt is not None:
+        return pyjwt.encode(payload, secret, algorithm="HS256")
+    header_b64 = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))
+    norm = dict(payload)
+    if isinstance(norm.get("exp"), datetime):
+        norm["exp"] = int(norm["exp"].timestamp())
+    payload_b64 = _b64url_encode(json.dumps(norm, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    return f"{header_b64}.{payload_b64}.{_b64url_encode(sig)}"
+
+
+def _jwt_decode_hs256(token: str, secret: str) -> dict:
+    if HAS_PYJWT and pyjwt is not None:
+        return pyjwt.decode(token, secret, algorithms=["HS256"])
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("Invalid token")
+    signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+    expected_sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    actual_sig = _b64url_decode(parts[2])
+    if not hmac.compare_digest(expected_sig, actual_sig):
+        raise ValueError("Invalid signature")
+    payload = json.loads(_b64url_decode(parts[1]).decode("utf-8"))
+    exp = payload.get("exp")
+    if exp is not None and time.time() > float(exp):
+        raise ValueError("Token expired")
+    return payload
+
+
 def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=15.0, check_same_thread=False)
-    return conn
+    return sqlite3.connect(DB_PATH, timeout=15.0, check_same_thread=False)
 
 
 def get_jwt_secret() -> str:
@@ -198,20 +208,8 @@ def init_db():
             brand TEXT,
             cam_user TEXT,
             cam_pass TEXT,
-            rtsp_url TEXT,
-            channel INTEGER DEFAULT 1,
-            stream_profile TEXT DEFAULT 'sub',
-            device_group TEXT DEFAULT ''
+            rtsp_url TEXT
         )""")
-        # Tự động nâng cấp bảng cũ nếu thiếu cột channel / stream_profile / device_group
-        existing_cols = {row[1] for row in c.execute("PRAGMA table_info(cameras)").fetchall()}
-        if "channel" not in existing_cols:
-            c.execute("ALTER TABLE cameras ADD COLUMN channel INTEGER DEFAULT 1")
-        if "stream_profile" not in existing_cols:
-            c.execute("ALTER TABLE cameras ADD COLUMN stream_profile TEXT DEFAULT 'sub'")
-        if "device_group" not in existing_cols:
-            c.execute("ALTER TABLE cameras ADD COLUMN device_group TEXT DEFAULT ''")
-
         c.execute("""CREATE TABLE IF NOT EXISTS login_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
@@ -253,6 +251,29 @@ def set_setting(key: str, value: str):
         conn.commit()
 
 
+def normalize_domain_url(raw: str) -> str:
+    cleaned = raw.strip().rstrip("/")
+    if not cleaned:
+        return ""
+    if not re.match(r"^https?://", cleaned, flags=re.IGNORECASE):
+        cleaned = "https://" + cleaned
+    return cleaned
+
+
+def parse_telegram_chat_ids(raw: str) -> List[str]:
+    parts = re.split(r"[,;\n\s]+", raw.strip())
+    seen = []
+    for p in parts:
+        p = p.strip()
+        if p and p not in seen:
+            seen.append(p)
+    return seen
+
+
+def mask_rtsp_url(rtsp_url: str) -> str:
+    return re.sub(r"(rtsp://[^:@/]+:)([^@/]+)(@)", r"\1****\3", rtsp_url)
+
+
 def log_login_attempt(username: str, status: str, request: Request):
     ip = (
         request.headers.get("CF-Connecting-IP")
@@ -269,11 +290,11 @@ def log_login_attempt(username: str, status: str, request: Request):
         conn.commit()
 
 
-# --- TELEGRAM BOT ALERT ---
+# --- TELEGRAM BOT & FAMILY GROUP ALERT ---
 def send_telegram_alert(alert_data: dict):
     bot_token = get_setting("tg_bot_token").strip()
-    chat_id = get_setting("tg_chat_id").strip()
-    if not bot_token or not chat_id:
+    chat_ids = parse_telegram_chat_ids(get_setting("tg_chat_id"))
+    if not bot_token or not chat_ids:
         return
 
     alert_type = alert_data.get("type")
@@ -283,28 +304,38 @@ def send_telegram_alert(alert_data: dict):
         return
 
     snap_rel = alert_data.get("snapshot", "").lstrip("/")
-    prefix = "🚨 [KHẨN CẤP - TÉ NGÃ]" if alert_type == "fall" else "👁️ [CHUYỂN ĐỘNG]"
-    caption = f"{prefix}\n{alert_data['message']}\n🕒 Thời gian: {alert_data['timestamp']}"
+    prefix = "🚨 [KHẨN CẤP - PHÁT HIỆN TÉ NGÃ]" if alert_type == "fall" else "👁️ [CHUYỂN ĐỘNG]"
+    remote_url = TUNNEL_STATE.get("url", "")
+    link_line = f"\n🔗 Xem trực tiếp: {remote_url}" if remote_url.startswith("http") else ""
+    caption = f"{prefix}\n{alert_data['message']}\n🕒 Thời gian: {alert_data['timestamp']}{link_line}"
 
     def _worker():
-        try:
-            url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-            if snap_rel and os.path.exists(snap_rel):
-                with open(snap_rel, "rb") as photo_file:
+        has_photo = bool(snap_rel and os.path.exists(snap_rel))
+        photo_bytes = None
+        if has_photo:
+            try:
+                with open(snap_rel, "rb") as f:
+                    photo_bytes = f.read()
+            except OSError:
+                photo_bytes = None
+
+        for cid in chat_ids:
+            try:
+                if photo_bytes:
                     httpx.post(
-                        url,
-                        data={"chat_id": chat_id, "caption": caption},
-                        files={"photo": photo_file},
+                        f"https://api.telegram.org/bot{bot_token}/sendPhoto",
+                        data={"chat_id": cid, "caption": caption},
+                        files={"photo": ("alert.jpg", photo_bytes, "image/jpeg")},
                         timeout=12.0,
                     )
-            else:
-                httpx.post(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    data={"chat_id": chat_id, "text": caption},
-                    timeout=10.0,
-                )
-        except Exception:
-            pass
+                else:
+                    httpx.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        data={"chat_id": cid, "text": caption},
+                        timeout=10.0,
+                    )
+            except Exception:
+                continue
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -340,297 +371,28 @@ def handle_ai_alert(alert_data: dict):
 ai_engine = CameraAIProcessor(on_alert_callback=handle_ai_alert)
 
 
-# --- REAL NETWORK & WIFI HELPERS ---
-def _find_termux_cmd(cmd_name: str) -> Optional[str]:
-    found = shutil.which(cmd_name)
-    if found:
-        return found
-    termux_bin = f"/data/data/com.termux/files/usr/bin/{cmd_name}"
-    if os.path.exists(termux_bin):
-        return termux_bin
-    return None
-
-
-def _get_local_network_info() -> Dict:
-    ip = ""
-    iface = "wlan0"
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        ip = ""
-
-    subnet = ".".join(ip.split(".")[:3]) + ".0/24" if ip and "." in ip else ""
-    try:
-        route_out = subprocess.check_output(["ip", "route", "get", "8.8.8.8"], timeout=2, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
-        m_dev = re.search(r"dev\s+(\S+)", route_out)
-        if m_dev:
-            iface = m_dev.group(1)
-    except Exception:
-        pass
-
-    ssid = ""
-    rssi = -55
-    freq = 0
-    conn_cmd = _find_termux_cmd("termux-wifi-connectioninfo")
-    if conn_cmd:
-        try:
-            raw = subprocess.check_output([conn_cmd], timeout=4, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
-            info = json.loads(raw)
-            ssid = str(info.get("ssid", "")).strip().strip('"')
-            if ssid == "<unknown ssid>":
-                ssid = ""
-            rssi = int(info.get("rssi", -55))
-            freq = int(info.get("frequency_mhz", 0))
-            if info.get("ip"):
-                ip = str(info["ip"])
-                subnet = ".".join(ip.split(".")[:3]) + ".0/24"
-        except Exception:
-            pass
-
-    if not ssid:
-        iw_cmd = _find_termux_cmd("iwgetid")
-        if iw_cmd:
-            try:
-                ssid = subprocess.check_output([iw_cmd, "-r"], timeout=2, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore").strip()
-            except Exception:
-                pass
-
-    return {
-        "ssid": ssid,
-        "ip": ip or "192.168.1.100",
-        "subnet": subnet or "192.168.1.0/24",
-        "interface": iface,
-        "rssi": rssi,
-        "frequency_mhz": freq,
-    }
-
-
-# --- RTSP AUTO-PROBE & MULTI-LENS STREAM ENGINE ---
-def build_rtsp_url(brand: str, ip: str, user: str, pwd: str, channel: int = 1, stream_profile: str = "sub") -> str:
-    brand_key = (brand or "custom").lower().strip()
-    profile_key = "main" if stream_profile == "main" else "sub"
-    templates = BRAND_STREAM_TEMPLATES.get(brand_key, BRAND_STREAM_TEMPLATES["custom"])
-    tmpl = templates.get(profile_key, templates["sub"])
-
-    # Riêng Yoosee đa mắt: kênh 1 dùng onvif2/onvif1, kênh >= 2 dùng /live/ch0{ch-1}_1 hoặc onvif{ch+1}
-    if brand_key == "yoosee" and channel > 1:
-        ch_idx = channel - 1
-        tmpl = "rtsp://{user}:{pwd}@{ip}:554/live/ch0" + str(ch_idx) + ("_0" if profile_key == "main" else "_1")
-    elif brand_key == "ezviz" and channel > 1:
-        tmpl = "rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/" + str(channel) + ("01" if profile_key == "main" else "02")
-
-    safe_u = urllib.parse.quote((user or "admin").strip() or "admin", safe="")
-    safe_p = urllib.parse.quote(pwd or "", safe="")
-    return tmpl.format(user=safe_u, pwd=safe_p, ip=ip, ch=channel)
-
-
-def _build_digest_auth_header(
-    username: str,
-    password: str,
-    realm: str,
-    nonce: str,
-    method: str,
-    uri: str,
-) -> str:
-    ha1 = hashlib.md5(f"{username}:{realm}:{password}".encode("utf-8")).hexdigest()
-    ha2 = hashlib.md5(f"{method}:{uri}".encode("utf-8")).hexdigest()
-    response = hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode("utf-8")).hexdigest()
-    return (
-        f'Digest username="{username}", realm="{realm}", '
-        f'nonce="{nonce}", uri="{uri}", response="{response}"'
-    )
-
-
-def _rtsp_describe_once(
-    ip: str,
-    port: int,
-    path: str,
-    username: str,
-    password: str,
-    timeout: float = 1.0,
-) -> Tuple[int, str]:
-    uri = f"rtsp://{ip}:{port}{path}"
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    try:
-        sock.connect((ip, port))
-        req1 = (
-            f"DESCRIBE {uri} RTSP/1.0\r\n"
-            f"CSeq: 1\r\n"
-            f"User-Agent: CamHubAI/1.3\r\n"
-            f"Accept: application/sdp\r\n\r\n"
-        )
-        sock.sendall(req1.encode("utf-8"))
-        resp1 = sock.recv(4096).decode("utf-8", errors="ignore")
-        if not resp1.startswith("RTSP/1.0"):
-            return 0, ""
-
-        parts = resp1.splitlines()[0].split()
-        code1 = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        server_hdr = ""
-        for line in resp1.splitlines():
-            if line.lower().startswith("server:"):
-                server_hdr = line.split(":", 1)[1].strip()
-
-        if code1 == 200 or code1 != 401:
-            return code1, server_hdr
-
-        realm_match = re.search(r'realm="([^"]+)"', resp1, re.IGNORECASE)
-        nonce_match = re.search(r'nonce="([^"]+)"', resp1, re.IGNORECASE)
-        if realm_match and nonce_match:
-            auth_val = _build_digest_auth_header(
-                username, password, realm_match.group(1), nonce_match.group(1), "DESCRIBE", uri
-            )
-            auth_header = f"Authorization: {auth_val}\r\n"
-        else:
-            b64 = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-            auth_header = f"Authorization: Basic {b64}\r\n"
-
-        req2 = (
-            f"DESCRIBE {uri} RTSP/1.0\r\n"
-            f"CSeq: 2\r\n"
-            f"User-Agent: CamHubAI/1.3\r\n"
-            f"Accept: application/sdp\r\n"
-            f"{auth_header}\r\n"
-        )
-        try:
-            sock.sendall(req2.encode("utf-8"))
-            resp2 = sock.recv(4096).decode("utf-8", errors="ignore")
-        except Exception:
-            resp2 = ""
-
-        if not resp2.startswith("RTSP/1.0"):
-            sock.close()
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
-            sock.connect((ip, port))
-            sock.sendall(req2.encode("utf-8"))
-            resp2 = sock.recv(4096).decode("utf-8", errors="ignore")
-
-        if not resp2.startswith("RTSP/1.0"):
-            return 401, server_hdr
-        parts2 = resp2.splitlines()[0].split()
-        code2 = int(parts2[1]) if len(parts2) > 1 and parts2[1].isdigit() else 401
-        return code2, server_hdr
-    except Exception:
-        return 0, ""
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
-
-
-def probe_camera_rtsp(
-    ip: str,
-    brand: str = "custom",
-    cam_user: str = "admin",
-    cam_pass: str = "",
-    auto_try_defaults: bool = True,
-    port: int = 554,
-    stream_profile: str = "sub",
-) -> Dict:
-    brand_key = (brand or "custom").lower().strip()
-    primary_path = BRAND_RTSP_PATHS.get(brand_key, "/stream1")
-
-    passwords_to_try: List[str] = []
-    if cam_pass:
-        passwords_to_try.append(cam_pass)
-    if auto_try_defaults:
-        brand_pwds = BRAND_DEFAULT_HINTS.get(brand_key, BRAND_DEFAULT_HINTS["custom"])["common_passwords"]
-        for pw in brand_pwds + ["admin", "123456", "12345", "888888", "123"]:
-            if pw not in passwords_to_try:
-                passwords_to_try.append(pw)
-    if not passwords_to_try:
-        passwords_to_try = ["admin"]
-
-    user_clean = (cam_user or "admin").strip() or "admin"
-    first_code, server_hdr = _rtsp_describe_once(ip, port, primary_path, user_clean, passwords_to_try[0])
-    if first_code == 0:
-        return {
-            "reachable": False,
-            "authenticated": False,
-            "matched_user": user_clean,
-            "matched_pass": cam_pass,
-            "matched_brand": brand_key,
-            "detected_channels": 1,
-            "rtsp_url": "",
-            "message": f"Không thể kết nối tới cổng RTSP {port} tại IP {ip}. Hãy kiểm tra IP hoặc bật ONVIF/RTSP trên camera.",
-        }
-
-    detected_brand = brand_key
-    srv_lower = server_hdr.lower()
-    if "hikvision" in srv_lower or "ezviz" in srv_lower:
-        detected_brand = "hikvision" if brand_key == "custom" else brand_key
-    elif "dahua" in srv_lower or "imou" in srv_lower:
-        detected_brand = "imou" if brand_key == "custom" else brand_key
-
-    for idx, pw in enumerate(passwords_to_try):
-        code, _ = (first_code, server_hdr) if idx == 0 else _rtsp_describe_once(ip, port, primary_path, user_clean, pw)
-        final_brand = detected_brand
-        if code == 404:
-            for alt_brand, alt_path in BRAND_RTSP_PATHS.items():
-                if alt_path == primary_path:
-                    continue
-                alt_code, _ = _rtsp_describe_once(ip, port, alt_path, user_clean, pw)
-                if alt_code == 200:
-                    code = 200
-                    final_brand = alt_brand
-                    break
-
-        if code == 200:
-            # Kiểm tra thêm xem thiết bị có nhiều mắt cam / nhiều kênh (channel 2, 3) hay không
-            detected_channels = 1
-            for ch in [2, 3]:
-                ch_url = build_rtsp_url(final_brand, ip, user_clean, pw, channel=ch, stream_profile=stream_profile)
-                ch_path = "/" + ch_url.split(f":{port}/", 1)[1]
-                ch_code, _ = _rtsp_describe_once(ip, port, ch_path, user_clean, pw, timeout=0.6)
-                if ch_code == 200:
-                    detected_channels = ch
-                else:
-                    break
-
-            rtsp_url = build_rtsp_url(final_brand, ip, user_clean, pw, channel=1, stream_profile=stream_profile)
-            return {
-                "reachable": True,
-                "authenticated": True,
-                "matched_user": user_clean,
-                "matched_pass": pw,
-                "matched_brand": final_brand,
-                "detected_channels": detected_channels,
-                "rtsp_url": rtsp_url,
-                "message": f"Kết nối RTSP thành công ({final_brand.upper()}, {detected_channels} mắt cam)! Mật khẩu: '{pw}'",
-            }
-
-    return {
-        "reachable": True,
-        "authenticated": False,
-        "matched_user": user_clean,
-        "matched_pass": cam_pass,
-        "matched_brand": detected_brand,
-        "detected_channels": 1,
-        "rtsp_url": "",
-        "message": "Cổng RTSP 554 đang mở nhưng không khớp mật khẩu mặc định. Vui lòng nhập mã Safety Code / Verification Code dưới đáy camera.",
-    }
-
-
 # --- MEDIAMTX & CLOUDFLARE TUNNEL ---
+def check_mediamtx_alive() -> bool:
+    try:
+        r = httpx.get("http://127.0.0.1:9997/v3/paths/list", timeout=1.5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def register_mediamtx_path(cam_id: str, rtsp_url: str):
     payload = {"source": rtsp_url, "record": True}
     try:
         resp = httpx.post(
             f"http://127.0.0.1:9997/v3/config/paths/add/{cam_id}",
             json=payload,
-            timeout=2.0,
+            timeout=3.0,
         )
         if resp.status_code == 400:
             httpx.patch(
                 f"http://127.0.0.1:9997/v3/config/paths/patch/{cam_id}",
                 json=payload,
-                timeout=2.0,
+                timeout=3.0,
             )
     except Exception:
         pass
@@ -658,17 +420,44 @@ def start_cloudflare_tunnel():
                     pass
 
         cf_token = get_setting("cf_token").strip()
-        custom_domain = get_setting("cf_custom_domain").strip()
+        custom_domain = normalize_domain_url(get_setting("cf_custom_domain"))
 
         try:
             if cf_token:
-                TUNNEL_STATE = {"url": custom_domain or "Named Tunnel Active", "status": "running", "mode": "named"}
+                TUNNEL_STATE = {
+                    "url": custom_domain or "Named Tunnel đang chạy",
+                    "status": "running",
+                    "mode": "named",
+                    "last_error": "",
+                }
                 cmd = ["cloudflared", "tunnel", "--no-autoupdate", "run", "--token", cf_token]
-                tunnel_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                tunnel_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+
+                def _watch_named(proc):
+                    if not proc.stdout:
+                        return
+                    for line in iter(proc.stdout.readline, ""):
+                        lower = line.lower()
+                        if "err" in lower and ("failed" in lower or "invalid" in lower or "unauthorized" in lower):
+                            TUNNEL_STATE["last_error"] = line.strip()[:180]
+                    if proc.poll() not in (None, 0):
+                        TUNNEL_STATE["status"] = "error"
+
+                threading.Thread(target=_watch_named, args=(tunnel_process,), daemon=True).start()
             else:
-                TUNNEL_STATE = {"url": "", "status": "starting", "mode": "quick"}
+                TUNNEL_STATE = {"url": "", "status": "starting", "mode": "quick", "last_error": ""}
                 cmd = ["cloudflared", "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8000"]
-                tunnel_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                tunnel_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
 
                 def _watch_and_drain_url(proc):
                     if not proc.stdout:
@@ -682,17 +471,23 @@ def start_cloudflare_tunnel():
 
                 threading.Thread(target=_watch_and_drain_url, args=(tunnel_process,), daemon=True).start()
         except FileNotFoundError:
-            TUNNEL_STATE = {"url": "", "status": "unavailable", "mode": "none"}
-        except Exception:
-            TUNNEL_STATE = {"url": "", "status": "error", "mode": "none"}
+            TUNNEL_STATE = {
+                "url": custom_domain if cf_token else "",
+                "status": "unavailable",
+                "mode": "named" if cf_token else "none",
+                "last_error": "Chưa cài đặt cloudflared trên thiết bị",
+            }
+        except Exception as e:
+            TUNNEL_STATE = {"url": "", "status": "error", "mode": "none", "last_error": str(e)}
 
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     global http_async_client
     http_async_client = httpx.AsyncClient(timeout=10.0)
-    start_cloudflare_tunnel()
-    boot_timer = threading.Timer(1.5, sync_cameras_on_boot)
+    if os.environ.get("CAMHUB_DISABLE_TUNNEL") != "1":
+        start_cloudflare_tunnel()
+    boot_timer = threading.Timer(2.0, sync_cameras_on_boot)
     boot_timer.daemon = True
     boot_timer.start()
     yield
@@ -715,25 +510,26 @@ app.mount("/snapshots", StaticFiles(directory="snapshots"), name="snapshots")
 
 
 # --- AUTH DEPENDENCIES ---
-def _extract_user_from_token(token: str) -> dict:
+def decode_bearer_or_query_token(authorization: Optional[str], token: Optional[str]) -> dict:
+    raw = None
+    if authorization and authorization.startswith("Bearer "):
+        raw = authorization.split(" ", 1)[1].strip()
+    elif token:
+        raw = token.strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        return _jwt_decode_hs256(raw, JWT_SECRET)
     except Exception:
         raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn")
 
 
 def get_current_user(authorization: Optional[str] = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
-    return _extract_user_from_token(authorization.split(" ", 1)[1])
+    return decode_bearer_or_query_token(authorization, None)
 
 
-def get_user_from_header_or_query(authorization: Optional[str] = Header(None), token: Optional[str] = None):
-    if authorization and authorization.startswith("Bearer "):
-        return _extract_user_from_token(authorization.split(" ", 1)[1])
-    if token:
-        return _extract_user_from_token(token)
-    raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+def get_stream_user(authorization: Optional[str] = Header(None), token: Optional[str] = Query(None)):
+    return decode_bearer_or_query_token(authorization, token)
 
 
 def require_admin(user: dict = Depends(get_current_user)):
@@ -749,7 +545,7 @@ def create_jwt_token(username: str, display_name: str, role: str, expire_days: i
         "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(days=expire_days),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    return _jwt_encode_hs256(payload, JWT_SECRET)
 
 
 # --- MODELS ---
@@ -767,6 +563,10 @@ class RegisterAdminRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     old_password: str
+    new_password: str
+
+
+class ResetMemberPasswordRequest(BaseModel):
     new_password: str
 
 
@@ -795,33 +595,36 @@ class WifiConnectRequest(BaseModel):
 
 class CameraCreateRequest(BaseModel):
     name: str
-    ip: str
-    brand: str
-    cam_user: str = "admin"
-    cam_pass: str = ""
-    lens_count: int = 1
-    stream_profile: str = "sub"
-
-
-class CameraProbeRequest(BaseModel):
-    ip: str
+    ip: str = ""
     brand: str = "imou"
     cam_user: str = "admin"
     cam_pass: str = ""
-    auto_try_defaults: bool = True
-    stream_profile: str = "sub"
+    custom_rtsp_url: str = ""
+
+
+class CameraProbeRequest(BaseModel):
+    ip: str = ""
+    brand: str = "imou"
+    cam_user: str = "admin"
+    cam_pass: str = ""
+    custom_rtsp_url: str = ""
 
 
 class PTZCommand(BaseModel):
     direction: str
     speed: float = 0.6
+    duration: float = 0.45
 
 
 class RetentionUpdate(BaseModel):
     days: int
 
 
-# --- LIVE VIDEO: HLS PROXY + BUILT-IN REALTIME MJPEG STREAM FALLBACK ---
+class TestFallRequest(BaseModel):
+    cam_id: Optional[str] = None
+
+
+# --- HLS REVERSE PROXY & UI ---
 @app.get("/hls/{path:path}")
 async def proxy_hls(path: str):
     if ".." in path or path.startswith("/"):
@@ -831,7 +634,7 @@ async def proxy_hls(path: str):
         if client is not None:
             resp = await client.get(f"http://127.0.0.1:8888/{path}")
         else:
-            async with httpx.AsyncClient(timeout=4.0) as temp_client:
+            async with httpx.AsyncClient(timeout=10.0) as temp_client:
                 resp = await temp_client.get(f"http://127.0.0.1:8888/{path}")
         return Response(
             content=resp.content,
@@ -839,35 +642,7 @@ async def proxy_hls(path: str):
             media_type=resp.headers.get("content-type", "application/vnd.apple.mpegurl"),
         )
     except httpx.RequestError:
-        raise HTTPException(status_code=502, detail="Luồng HLS MediaMTX chưa chạy, tự động chuyển sang MJPEG Realtime")
-
-
-@app.get("/api/cameras/{cam_id}/mjpeg")
-def stream_camera_mjpeg(cam_id: str, user: dict = Depends(get_user_from_header_or_query)):
-    def _gen():
-        while True:
-            jpg = ai_engine.get_latest_jpeg(cam_id)
-            if jpg:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Cache-Control: no-cache\r\n\r\n" + jpg + b"\r\n"
-                )
-            time.sleep(0.12)
-
-    return StreamingResponse(
-        _gen(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-    )
-
-
-@app.get("/api/cameras/{cam_id}/snapshot")
-def get_camera_snapshot(cam_id: str, user: dict = Depends(get_user_from_header_or_query)):
-    jpg = ai_engine.get_latest_jpeg(cam_id)
-    if not jpg:
-        raise HTTPException(status_code=404, detail="Chưa nhận được khung hình từ camera")
-    return Response(content=jpg, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+        raise HTTPException(status_code=502, detail="Luồng phát HLS (MediaMTX) chưa sẵn sàng")
 
 
 @app.get("/")
@@ -954,12 +729,36 @@ def get_login_logs(admin: dict = Depends(require_admin)):
     }
 
 
+@app.get("/api/setup/checklist")
+def get_setup_checklist(admin: dict = Depends(require_admin)):
+    with get_db_connection() as conn:
+        has_admin = conn.execute("SELECT COUNT(*) FROM users WHERE role='admin'").fetchone()[0] > 0
+        cam_count = conn.execute("SELECT COUNT(*) FROM cameras").fetchone()[0]
+        member_count = conn.execute("SELECT COUNT(*) FROM users WHERE role='member'").fetchone()[0]
+    has_tg = bool(get_setting("tg_bot_token").strip() and parse_telegram_chat_ids(get_setting("tg_chat_id")))
+    has_fixed = bool(get_setting("cf_token").strip() and get_setting("cf_custom_domain").strip())
+    has_tunnel = bool(TUNNEL_STATE.get("url", "").startswith("http") or has_fixed)
+    return {
+        "has_admin": has_admin,
+        "camera_count": cam_count,
+        "has_cameras": cam_count > 0,
+        "has_telegram": has_tg,
+        "has_tunnel": has_tunnel,
+        "has_fixed_domain": has_fixed,
+        "member_count": member_count,
+        "has_family_members": member_count > 0,
+        "ai_engine": "MediaPipe Pose" if HAS_MEDIAPIPE else "OpenCV Contour Fallback",
+        "mediamtx_ok": check_mediamtx_alive(),
+    }
+
+
 # --- TELEGRAM CONFIG ---
 @app.get("/api/telegram/config")
 def get_telegram_config(admin: dict = Depends(require_admin)):
     return {
         "bot_token": get_setting("tg_bot_token"),
         "chat_id": get_setting("tg_chat_id"),
+        "chat_id_count": len(parse_telegram_chat_ids(get_setting("tg_chat_id"))),
         "alert_motion": get_setting("tg_alert_motion") == "1",
         "alert_fall": get_setting("tg_alert_fall") == "1",
     }
@@ -971,36 +770,49 @@ def save_telegram_config(req: TelegramConfigRequest, admin: dict = Depends(requi
     set_setting("tg_chat_id", req.chat_id.strip())
     set_setting("tg_alert_motion", "1" if req.alert_motion else "0")
     set_setting("tg_alert_fall", "1" if req.alert_fall else "0")
-    return {"status": "ok"}
+    return {"status": "ok", "targets": parse_telegram_chat_ids(req.chat_id)}
 
 
 @app.post("/api/telegram/test")
 def test_telegram_alert(admin: dict = Depends(require_admin)):
     bot_token = get_setting("tg_bot_token").strip()
-    chat_id = get_setting("tg_chat_id").strip()
-    if not bot_token or not chat_id:
-        raise HTTPException(status_code=400, detail="Chưa nhập Bot Token hoặc Chat ID")
-    try:
-        resp = httpx.post(
-            f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            data={
-                "chat_id": chat_id,
-                "text": "✅ CamHub AI Pro: Kết nối Telegram Bot thành công! Hệ thống sẵn sàng gửi ảnh cảnh báo té ngã & chuyển động.",
-            },
-            timeout=10.0,
-        )
-    except httpx.RequestError:
-        raise HTTPException(status_code=502, detail="Không thể kết nối tới máy chủ Telegram")
-    if resp.status_code != 200:
-        raise HTTPException(status_code=400, detail="Lỗi gửi tin nhắn Telegram, kiểm tra lại Token/Chat ID")
-    return {"status": "ok"}
+    chat_ids = parse_telegram_chat_ids(get_setting("tg_chat_id"))
+    if not bot_token or not chat_ids:
+        raise HTTPException(status_code=400, detail="Chưa nhập Bot Token hoặc Chat ID / Group ID")
+
+    remote_url = TUNNEL_STATE.get("url", "")
+    link_part = f"\n🔗 Truy cập từ xa: {remote_url}" if remote_url.startswith("http") else ""
+    msg = (
+        "✅ CamHub AI Pro: Kết nối Telegram Bot & Nhóm Gia đình thành công!\n"
+        "Hệ thống đã sẵn sàng gửi ảnh cảnh báo té ngã & chuyển động." + link_part
+    )
+
+    sent = []
+    failed = []
+    for cid in chat_ids:
+        try:
+            resp = httpx.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                data={"chat_id": cid, "text": msg},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                sent.append(cid)
+            else:
+                failed.append(cid)
+        except httpx.RequestError:
+            failed.append(cid)
+
+    if not sent:
+        raise HTTPException(status_code=400, detail="Không gửi được tới Telegram. Kiểm tra lại Bot Token, Chat ID/Group ID và kết nối mạng.")
+    return {"status": "ok", "sent": sent, "failed": failed}
 
 
 # --- FAMILY & TUNNEL ---
 @app.get("/api/family")
 def list_family(admin: dict = Depends(require_admin)):
     with get_db_connection() as conn:
-        rows = conn.execute("SELECT id, username, display_name, role, created_at FROM users").fetchall()
+        rows = conn.execute("SELECT id, username, display_name, role, created_at FROM users ORDER BY id ASC").fetchall()
     return {
         "members": [
             {"id": r[0], "username": r[1], "display_name": r[2], "role": r[3], "created_at": r[4]}
@@ -1027,6 +839,21 @@ def create_family_member(req: FamilyMemberRequest, admin: dict = Depends(require
             raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
 
 
+@app.put("/api/family/{member_id}/password")
+def reset_family_password(member_id: int, req: ResetMemberPasswordRequest, admin: dict = Depends(require_admin)):
+    if len(req.new_password) < 4:
+        raise HTTPException(status_code=400, detail="Mật khẩu mới phải có ít nhất 4 ký tự")
+    with get_db_connection() as conn:
+        cur = conn.execute(
+            "UPDATE users SET password_hash=? WHERE id=? AND role='member'",
+            (hash_password(req.new_password), member_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Không tìm thấy thành viên gia đình")
+    return {"status": "ok"}
+
+
 @app.delete("/api/family/{member_id}")
 def delete_family_member(member_id: int, admin: dict = Depends(require_admin)):
     with get_db_connection() as conn:
@@ -1038,73 +865,72 @@ def delete_family_member(member_id: int, admin: dict = Depends(require_admin)):
 @app.get("/api/tunnel")
 def get_tunnel_info(admin: dict = Depends(require_admin)):
     return {
-        "url": TUNNEL_STATE["url"],
-        "status": TUNNEL_STATE["status"],
+        "url": TUNNEL_STATE.get("url", ""),
+        "status": TUNNEL_STATE.get("status", "starting"),
+        "mode": TUNNEL_STATE.get("mode", "quick"),
         "custom_domain": get_setting("cf_custom_domain"),
+        "has_token": bool(get_setting("cf_token").strip()),
+        "last_error": TUNNEL_STATE.get("last_error", ""),
     }
 
 
 @app.post("/api/tunnel/config")
 def update_tunnel_config(req: TunnelConfigRequest, admin: dict = Depends(require_admin)):
-    set_setting("cf_token", req.cf_token.strip())
-    set_setting("cf_custom_domain", req.custom_domain.strip())
-    start_cloudflare_tunnel()
-    return {"status": "ok"}
+    token_clean = req.cf_token.strip()
+    domain_clean = normalize_domain_url(req.custom_domain)
+    set_setting("cf_token", token_clean)
+    set_setting("cf_custom_domain", domain_clean)
+    if os.environ.get("CAMHUB_DISABLE_TUNNEL") != "1":
+        start_cloudflare_tunnel()
+    else:
+        TUNNEL_STATE["mode"] = "named" if token_clean else "quick"
+        TUNNEL_STATE["url"] = domain_clean if token_clean else ""
+        TUNNEL_STATE["status"] = "running" if token_clean else "starting"
+    return {"status": "ok", "mode": TUNNEL_STATE.get("mode"), "custom_domain": domain_clean}
+
+
+@app.delete("/api/tunnel/config")
+def clear_tunnel_config(admin: dict = Depends(require_admin)):
+    set_setting("cf_token", "")
+    set_setting("cf_custom_domain", "")
+    if os.environ.get("CAMHUB_DISABLE_TUNNEL") != "1":
+        start_cloudflare_tunnel()
+    else:
+        TUNNEL_STATE["mode"] = "quick"
+        TUNNEL_STATE["url"] = ""
+        TUNNEL_STATE["status"] = "starting"
+    return {"status": "ok", "mode": "quick"}
 
 
 @app.post("/api/tunnel/restart")
 def restart_tunnel(admin: dict = Depends(require_admin)):
-    start_cloudflare_tunnel()
+    if os.environ.get("CAMHUB_DISABLE_TUNNEL") != "1":
+        start_cloudflare_tunnel()
     return {"status": "ok"}
 
 
-# --- WIFI (REAL DEVICE NETWORK & SIGNAL), CAMERA, PTZ ONVIF & TWO-WAY AUDIO ---
+# --- WIFI, CAMERA, PTZ ONVIF & TWO-WAY AUDIO ---
 @app.get("/api/wifi/scan")
 def scan_wifi(admin: dict = Depends(require_admin)):
-    current = _get_local_network_info()
-    networks = []
-    scan_source = "network_interface"
-
-    scan_cmd = _find_termux_cmd("termux-wifi-scaninfo")
-    if scan_cmd:
-        try:
-            output = subprocess.check_output([scan_cmd], timeout=8, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
-            raw_list = json.loads(output)
-            seen = {}
-            if isinstance(raw_list, list):
-                for net in raw_list:
-                    ssid = str(net.get("ssid", "")).strip()
-                    rssi = int(net.get("rssi", -100))
-                    if ssid and (ssid not in seen or rssi > seen[ssid]["rssi"]):
-                        seen[ssid] = {
-                            "ssid": ssid,
-                            "rssi": rssi,
-                            "connected": ssid == current["ssid"],
-                            "frequency_mhz": int(net.get("frequency_mhz", 0)),
-                        }
-            if seen:
-                networks = sorted(seen.values(), key=lambda x: (not x["connected"], -x["rssi"]))
-                scan_source = "termux_wifi_api"
-        except Exception:
-            pass
-
-    if not networks and current["ssid"]:
-        networks = [{
-            "ssid": current["ssid"],
-            "rssi": current["rssi"],
-            "connected": True,
-            "frequency_mhz": current["frequency_mhz"],
-        }]
-
-    return {
-        "current": current,
-        "networks": networks,
-        "scan_source": scan_source,
-        "note": (
-            "" if scan_source == "termux_wifi_api"
-            else "Đang lấy thông tin mạng LAN/Wi-Fi thực tế từ giao diện mạng thiết bị. Để quét danh sách Wi-Fi xung quanh, hãy cài ứng dụng Termux:API và cấp quyền Vị trí."
-        ),
-    }
+    try:
+        output = subprocess.check_output(
+            ["termux-wifi-scaninfo"],
+            timeout=8,
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8")
+        networks = json.loads(output)
+        seen = {}
+        if isinstance(networks, list):
+            for net in networks:
+                ssid = str(net.get("ssid", "")).strip()
+                rssi = int(net.get("rssi", -100))
+                if ssid and (ssid not in seen or rssi > seen[ssid]["rssi"]):
+                    seen[ssid] = {"ssid": ssid, "rssi": rssi}
+        if seen:
+            return {"networks": sorted(seen.values(), key=lambda x: x["rssi"], reverse=True), "source": "termux-api"}
+    except Exception:
+        pass
+    return {"networks": [], "source": "unavailable", "message": "Cần cài ứng dụng Termux:API trên Android để quét Wi-Fi trực tiếp."}
 
 
 @app.post("/api/wifi/connect")
@@ -1112,17 +938,64 @@ def connect_wifi(req: WifiConnectRequest, admin: dict = Depends(require_admin)):
     ssid = req.ssid.strip()
     if not ssid:
         raise HTTPException(status_code=400, detail="Vui lòng chọn mạng Wi-Fi")
-    wifi_enable_cmd = _find_termux_cmd("termux-wifi-enable")
-    if wifi_enable_cmd:
-        try:
-            subprocess.run([wifi_enable_cmd, "true"], timeout=5, check=False)
-            return {"status": "ok", "message": f"Đã kích hoạt Wi-Fi trên thiết bị cho mạng {ssid}"}
-        except Exception as e:
-            return {"status": "warning", "message": str(e)}
-    return {
-        "status": "info",
-        "message": f"Android hạn chế đổi Wi-Fi tự động từ môi trường Linux. Vui lòng kết nối trực tiếp vào Wi-Fi '{ssid}' trong Cài đặt Android.",
-    }
+    try:
+        subprocess.run(["termux-wifi-enable", "true"], timeout=5, check=False)
+        return {"status": "ok", "message": f"Đã bật Wi-Fi cho mạng {ssid}. Nếu Android chặn tự kết nối, hãy chọn mạng này trong Cài đặt Wi-Fi của máy."}
+    except Exception as e:
+        return {"status": "warning", "message": str(e)}
+
+
+@app.get("/api/cameras/brand-hints")
+def get_camera_brand_hints(user: dict = Depends(get_current_user)):
+    return {"hints": BRAND_DEFAULT_HINTS}
+
+
+def _detect_local_subnet() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "192.168.1.100"
+    finally:
+        s.close()
+    return ".".join(ip.split(".")[:3])
+
+
+@app.get("/api/cameras/discover")
+def discover_cameras(admin: dict = Depends(require_admin)):
+    subnet = _detect_local_subnet()
+    ips = [f"{subnet}.{i}" for i in range(1, 255)]
+    found = []
+
+    def _scan(target):
+        rtsp_open = []
+        for port in (554, 8554):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.28)
+            try:
+                if sock.connect_ex((target, port)) == 0:
+                    rtsp_open.append(port)
+            finally:
+                sock.close()
+        if not rtsp_open:
+            return None
+        onvif_open = []
+        for port in (80, 8000, 8899, 2020):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.22)
+            try:
+                if sock.connect_ex((target, port)) == 0:
+                    onvif_open.append(port)
+            finally:
+                sock.close()
+        return {"ip": target, "rtsp_ports": rtsp_open, "onvif_ports": onvif_open}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
+        for res in ex.map(_scan, ips):
+            if res:
+                found.append(res)
+    return {"subnet": f"{subnet}.0/24", "devices": found}
 
 
 def _validate_camera_host(host: str) -> str:
@@ -1138,132 +1011,113 @@ def _validate_camera_host(host: str) -> str:
         raise HTTPException(status_code=400, detail="Địa chỉ IP hoặc Hostname Camera không hợp lệ")
 
 
-@app.get("/api/cameras/brand-hints")
-def get_camera_brand_hints(user: dict = Depends(get_current_user)):
-    return {"hints": BRAND_DEFAULT_HINTS}
+def _build_camera_rtsp(ip: str, brand: str, cam_user: str, cam_pass: str, custom_rtsp_url: str) -> tuple[str, str, str]:
+    custom = custom_rtsp_url.strip()
+    brand_key = (brand or "custom").lower().strip()
+    if custom:
+        if not re.match(r"^rtsps?://", custom, flags=re.IGNORECASE):
+            raise HTTPException(status_code=400, detail="Link RTSP thủ công phải bắt đầu bằng rtsp:// hoặc rtsps://")
+        parsed = urllib.parse.urlparse(custom)
+        host = parsed.hostname or ip.strip() or "custom-rtsp"
+        return host, brand_key or "custom", custom
+
+    ip_clean = _validate_camera_host(ip)
+    template = BRAND_TEMPLATES.get(brand_key, BRAND_TEMPLATES["custom"])
+    safe_user = urllib.parse.quote((cam_user or "admin").strip(), safe="")
+    safe_pass = urllib.parse.quote(cam_pass or "", safe="")
+    rtsp_url = template.format(user=safe_user, pwd=safe_pass, ip=ip_clean)
+    return ip_clean, brand_key, rtsp_url
 
 
 @app.post("/api/cameras/probe")
-def probe_camera_endpoint(req: CameraProbeRequest, admin: dict = Depends(require_admin)):
-    ip_clean = _validate_camera_host(req.ip)
-    return probe_camera_rtsp(
-        ip=ip_clean,
-        brand=req.brand,
-        cam_user=req.cam_user,
-        cam_pass=req.cam_pass,
-        auto_try_defaults=req.auto_try_defaults,
-        stream_profile=req.stream_profile,
-    )
+def probe_camera(req: CameraProbeRequest, admin: dict = Depends(require_admin)):
+    host, _, rtsp_url = _build_camera_rtsp(req.ip, req.brand, req.cam_user, req.cam_pass, req.custom_rtsp_url)
+    parsed = urllib.parse.urlparse(rtsp_url)
+    target_host = parsed.hostname or host
+    target_port = parsed.port or 554
 
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(2.0)
+    try:
+        tcp_ok = sock.connect_ex((target_host, target_port)) == 0
+    except Exception:
+        tcp_ok = False
+    finally:
+        sock.close()
 
-@app.get("/api/cameras/discover")
-def discover_cameras(admin: dict = Depends(require_admin)):
-    net_info = _get_local_network_info()
-    ip = net_info["ip"]
-    subnet = ".".join(ip.split(".")[:3])
-    ips = [f"{subnet}.{i}" for i in range(1, 255)]
-    found = []
-
-    def _scan(target):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.35)
-        try:
-            ok = sock.connect_ex((target, 554)) == 0
-        finally:
-            sock.close()
-        if not ok:
-            return None
-        probe = probe_camera_rtsp(target, brand="custom", cam_user="admin", cam_pass="", auto_try_defaults=True)
+    if not tcp_ok:
         return {
-            "ip": target,
-            "authenticated": probe["authenticated"],
-            "matched_user": probe["matched_user"],
-            "matched_pass": probe["matched_pass"] if probe["authenticated"] else "",
-            "matched_brand": probe["matched_brand"],
-            "detected_channels": probe.get("detected_channels", 1),
+            "reachable": False,
+            "rtsp_masked": mask_rtsp_url(rtsp_url),
+            "message": f"Không thể kết nối tới {target_host}:{target_port}. Kiểm tra IP camera, nguồn điện và cùng mạng Wi-Fi.",
         }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
-        for res in ex.map(_scan, ips):
-            if res:
-                found.append(res)
-    return {"subnet": net_info["subnet"], "host_ip": ip, "devices": found}
+    return {
+        "reachable": True,
+        "rtsp_masked": mask_rtsp_url(rtsp_url),
+        "message": f"Cổng RTSP {target_host}:{target_port} đang mở và sẵn sàng kết nối!",
+    }
 
 
 @app.get("/api/cameras")
 def list_cameras(user: dict = Depends(get_current_user)):
     with get_db_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, name, ip, brand, channel, stream_profile, device_group FROM cameras ORDER BY device_group, channel, id"
-        ).fetchall()
-    cams = []
+        rows = conn.execute("SELECT id, name, ip, brand, cam_user, rtsp_url FROM cameras").fetchall()
+    result = []
     for r in rows:
         st = ai_engine.get_camera_status(r[0])
-        cams.append({
+        result.append({
             "id": r[0],
             "name": r[1],
             "ip": r[2],
             "brand": r[3],
-            "channel": r[4] or 1,
-            "stream_profile": r[5] or "sub",
-            "device_group": r[6] or r[2],
-            "online": st["online"],
-            "fps": st["fps"],
+            "cam_user": r[4],
+            "rtsp_masked": mask_rtsp_url(r[5] or ""),
+            "online": st.get("online", False),
+            "ai_engine": st.get("engine", "contour"),
+            "lens_count": st.get("lens_count", 1),
         })
-    return {"cameras": cams}
+    return {"cameras": result}
 
 
 @app.post("/api/cameras")
 def add_camera(req: CameraCreateRequest, admin: dict = Depends(require_admin)):
-    ip_clean = _validate_camera_host(req.ip)
-    brand_key = req.brand.lower().strip()
-    user_clean = req.cam_user.strip() or "admin"
-    pass_clean = req.cam_pass
-    stream_profile = "main" if req.stream_profile == "main" else "sub"
-    lens_count = max(1, min(8, int(req.lens_count or 1)))
-
-    probe = probe_camera_rtsp(
-        ip=ip_clean,
-        brand=brand_key,
-        cam_user=user_clean,
-        cam_pass=pass_clean,
-        auto_try_defaults=not bool(pass_clean),
-        stream_profile=stream_profile,
+    ip_clean, brand_key, rtsp_url = _build_camera_rtsp(
+        req.ip, req.brand, req.cam_user, req.cam_pass, req.custom_rtsp_url
     )
-    if probe["authenticated"]:
-        user_clean = probe["matched_user"]
-        pass_clean = probe["matched_pass"]
-        brand_key = probe["matched_brand"] or brand_key
-        if lens_count == 1 and probe.get("detected_channels", 1) > 1:
-            lens_count = probe["detected_channels"]
-
-    base_name = req.name.strip() or f"Camera {ip_clean}"
-    device_group = f"dev_{ip_clean}_{int(time.time())}"
-    created_ids = []
-
+    cam_id = f"cam_{int(time.time() * 1000)}_{secrets.token_hex(2)}"
+    cam_name = req.name.strip() or f"Camera {ip_clean}"
     with get_db_connection() as conn:
-        for ch in range(1, lens_count + 1):
-            cam_id = f"cam_{int(time.time() * 1000)}_{ch}_{secrets.token_hex(2)}"
-            lens_name = f"{base_name} (Mắt {ch})" if lens_count > 1 else base_name
-            rtsp_url = build_rtsp_url(brand_key, ip_clean, user_clean, pass_clean, channel=ch, stream_profile=stream_profile)
-            conn.execute(
-                "INSERT INTO cameras (id, name, ip, brand, cam_user, cam_pass, rtsp_url, channel, stream_profile, device_group) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (cam_id, lens_name, ip_clean, brand_key, user_clean, pass_clean, rtsp_url, ch, stream_profile, device_group),
-            )
-            register_mediamtx_path(cam_id, rtsp_url)
-            ai_engine.start_camera_monitor(cam_id, lens_name, rtsp_url)
-            created_ids.append(cam_id)
+        conn.execute(
+            "INSERT INTO cameras VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cam_id, cam_name, ip_clean, brand_key, req.cam_user.strip() or "admin", req.cam_pass, rtsp_url),
+        )
         conn.commit()
+    register_mediamtx_path(cam_id, rtsp_url)
+    ai_engine.start_camera_monitor(cam_id, cam_name, rtsp_url)
+    return {"status": "ok", "id": cam_id, "rtsp_masked": mask_rtsp_url(rtsp_url)}
 
-    return {
-        "status": "ok",
-        "id": created_ids[0],
-        "ids": created_ids,
-        "lens_count": lens_count,
-        "authenticated": probe["authenticated"],
-        "matched_pass": pass_clean if probe["authenticated"] else "",
-        "probe_message": probe["message"],
-    }
+
+@app.put("/api/cameras/{cam_id}")
+def update_camera(cam_id: str, req: CameraCreateRequest, admin: dict = Depends(require_admin)):
+    with get_db_connection() as conn:
+        existing = conn.execute("SELECT cam_pass FROM cameras WHERE id=?", (cam_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+        effective_pass = req.cam_pass if req.cam_pass != "" else existing[0]
+        ip_clean, brand_key, rtsp_url = _build_camera_rtsp(
+            req.ip, req.brand, req.cam_user, effective_pass, req.custom_rtsp_url
+        )
+        cam_name = req.name.strip() or f"Camera {ip_clean}"
+        conn.execute(
+            "UPDATE cameras SET name=?, ip=?, brand=?, cam_user=?, cam_pass=?, rtsp_url=? WHERE id=?",
+            (cam_name, ip_clean, brand_key, req.cam_user.strip() or "admin", effective_pass, rtsp_url, cam_id),
+        )
+        conn.commit()
+    ONVIF_CLIENTS.pop(cam_id, None)
+    register_mediamtx_path(cam_id, rtsp_url)
+    ai_engine.start_camera_monitor(cam_id, cam_name, rtsp_url)
+    return {"status": "ok", "id": cam_id}
 
 
 @app.delete("/api/cameras/{cam_id}")
@@ -1278,6 +1132,36 @@ def delete_camera(cam_id: str, admin: dict = Depends(require_admin)):
     except Exception:
         pass
     return {"status": "ok"}
+
+
+@app.get("/api/cameras/{cam_id}/snapshot")
+def camera_snapshot(cam_id: str, lens: int = Query(0, ge=0, le=4), user: dict = Depends(get_stream_user)):
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT name FROM cameras WHERE id=?", (cam_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+    frame = ai_engine.get_latest_frame(cam_id, lens=lens)
+    if not frame:
+        frame = ai_engine.build_placeholder_jpeg(row[0], "Dang cho tin hieu RTSP tu camera...")
+    return Response(content=frame, media_type="image/jpeg")
+
+
+@app.get("/api/cameras/{cam_id}/mjpeg")
+def camera_mjpeg_stream(cam_id: str, lens: int = Query(0, ge=0, le=4), user: dict = Depends(get_stream_user)):
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT name FROM cameras WHERE id=?", (cam_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+    cam_name = row[0]
+
+    def _gen():
+        placeholder = ai_engine.build_placeholder_jpeg(cam_name, "Dang ket noi luong RTSP...")
+        while True:
+            frame = ai_engine.get_latest_frame(cam_id, lens=lens) or placeholder
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            time.sleep(0.2)
+
+    return StreamingResponse(_gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 def get_onvif_ptz(cam_id: str):
@@ -1303,45 +1187,63 @@ def get_onvif_ptz(cam_id: str):
             return ptz, token
         except Exception:
             continue
-    raise HTTPException(status_code=400, detail="Camera chưa bật ONVIF hoặc không hỗ trợ xoay PTZ")
+    raise HTTPException(status_code=400, detail="Camera chưa bật ONVIF hoặc không hỗ trợ xoay/zoom quang học PTZ")
+
+
+VALID_PTZ_DIRECTIONS = {"left", "right", "up", "down", "zoom_in", "zoom_out", "home", "stop"}
 
 
 @app.post("/api/cameras/{cam_id}/ptz")
 def control_ptz(cam_id: str, cmd: PTZCommand, user: dict = Depends(get_current_user)):
+    direction = cmd.direction.strip().lower()
+    if direction not in VALID_PTZ_DIRECTIONS:
+        raise HTTPException(status_code=400, detail="Lệnh điều khiển PTZ không hợp lệ")
+
     ptz, token = get_onvif_ptz(cam_id)
     try:
-        if cmd.direction == "stop":
-            ptz.Stop({"ProfileToken": token})
+        if direction == "stop":
+            ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
             return {"status": "stopped"}
+
+        if direction == "home":
+            try:
+                ptz.GotoHomePosition({"ProfileToken": token})
+                return {"status": "ok", "direction": "home"}
+            except Exception:
+                raise HTTPException(status_code=400, detail="Camera không hỗ trợ vị trí gốc (Home Position)")
 
         req = ptz.create_type("ContinuousMove")
         req.ProfileToken = token
         req.Velocity = {"PanTilt": {"x": 0.0, "y": 0.0}, "Zoom": {"x": 0.0}}
 
         s = max(0.1, min(1.0, cmd.speed))
-        if cmd.direction == "left":
+        if direction == "left":
             req.Velocity["PanTilt"]["x"] = -s
-        elif cmd.direction == "right":
+        elif direction == "right":
             req.Velocity["PanTilt"]["x"] = s
-        elif cmd.direction == "up":
+        elif direction == "up":
             req.Velocity["PanTilt"]["y"] = s
-        elif cmd.direction == "down":
+        elif direction == "down":
             req.Velocity["PanTilt"]["y"] = -s
-        else:
-            raise HTTPException(status_code=400, detail="Hướng điều khiển PTZ không hợp lệ")
+        elif direction == "zoom_in":
+            req.Velocity["Zoom"]["x"] = s
+        elif direction == "zoom_out":
+            req.Velocity["Zoom"]["x"] = -s
 
         ptz.ContinuousMove(req)
 
+        dur = max(0.15, min(2.0, cmd.duration))
+
         def _safe_stop():
             try:
-                ptz.Stop({"ProfileToken": token})
+                ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
             except Exception:
                 pass
 
-        t = threading.Timer(0.45, _safe_stop)
+        t = threading.Timer(dur, _safe_stop)
         t.daemon = True
         t.start()
-        return {"status": "ok", "direction": cmd.direction}
+        return {"status": "ok", "direction": direction, "speed": s}
     except HTTPException:
         raise
     except Exception:
@@ -1392,19 +1294,27 @@ async def push_two_way_audio(cam_id: str, audio: UploadFile = File(...), user: d
 # --- DEVICE HEALTH, STORAGE, RECORDINGS & ALERTS ---
 @app.get("/api/system/health")
 def get_device_health(user: dict = Depends(get_current_user)):
-    bat_cmd = _find_termux_cmd("termux-battery-status")
-    if bat_cmd:
-        try:
-            raw = subprocess.check_output([bat_cmd], timeout=3, stderr=subprocess.DEVNULL).decode("utf-8")
-            info = json.loads(raw)
-            return {
-                "battery_pct": info.get("percentage", 100),
-                "temperature": info.get("temperature", 35.0),
-                "status": info.get("status", "OPTIMAL"),
-            }
-        except Exception:
-            pass
-    return {"battery_pct": 100, "temperature": 35.0, "status": "OPTIMAL"}
+    try:
+        raw = subprocess.check_output(
+            ["termux-battery-status"],
+            timeout=2,
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8")
+        info = json.loads(raw)
+        return {
+            "battery_pct": info.get("percentage", 100),
+            "temperature": info.get("temperature", 35.0),
+            "status": info.get("status", "OPTIMAL"),
+            "ai_engine": "MediaPipe Pose" if HAS_MEDIAPIPE else "OpenCV Contour",
+        }
+    except Exception:
+        temp = ai_engine._read_device_temp() or 35.0
+        return {
+            "battery_pct": 100,
+            "temperature": round(temp, 1),
+            "status": "OPTIMAL",
+            "ai_engine": "MediaPipe Pose" if HAS_MEDIAPIPE else "OpenCV Contour",
+        }
 
 
 def cleanup_old_recordings(retention_days: int, free_bytes: int):
@@ -1496,3 +1406,18 @@ def list_recordings(user: dict = Depends(get_current_user)):
 def get_alerts(user: dict = Depends(get_current_user)):
     with ALERTS_LOCK:
         return {"alerts": list(ALERTS_LOG)}
+
+
+@app.post("/api/alerts/test-fall")
+def trigger_test_fall(req: TestFallRequest, admin: dict = Depends(require_admin)):
+    cam_id = req.cam_id or "demo_cam"
+    cam_name = "Camera Thử Nghiệm"
+    with get_db_connection() as conn:
+        if req.cam_id:
+            row = conn.execute("SELECT id, name FROM cameras WHERE id=?", (req.cam_id,)).fetchone()
+        else:
+            row = conn.execute("SELECT id, name FROM cameras LIMIT 1").fetchone()
+        if row:
+            cam_id, cam_name = row[0], row[1]
+    alert = ai_engine.trigger_test_fall_alert(cam_id, cam_name)
+    return {"status": "ok", "alert": alert}
