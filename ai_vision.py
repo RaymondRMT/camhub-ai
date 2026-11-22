@@ -63,29 +63,49 @@ class FaceAndPlateEnhancer:
         return None
 
     @staticmethod
-    def enhance_zoom_crop(crop: np.ndarray, min_width: int = 380) -> np.ndarray:
-        """Khử ô nén trước khi phóng to LANCZOS4 + làm nét nhẹ tự nhiên để hết vân gợn."""
+    def _make_square_box(x1: int, y1: int, x2: int, y2: int, img_w: int, img_h: int):
+        """Mở rộng khung cắt thành hình vuông 1:1 quanh tâm để hiển thị gọn đẹp trên Telegram."""
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        side = min(max(bw, bh), img_w, img_h)
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        sx1 = max(0, cx - side // 2)
+        sy1 = max(0, cy - side // 2)
+        sx2 = sx1 + side
+        sy2 = sy1 + side
+        if sx2 > img_w:
+            sx2 = img_w
+            sx1 = max(0, img_w - side)
+        if sy2 > img_h:
+            sy2 = img_h
+            sy1 = max(0, img_h - side)
+        return sx1, sy1, sx2, sy2
+
+    @staticmethod
+    def enhance_zoom_crop(crop: np.ndarray, min_width: int = 440, is_plate: bool = False) -> np.ndarray:
+        """Phóng to khung vuông LANCZOS4 + tăng nét chữ biển số (không làm nhòe nét mảnh)."""
         if crop is None or crop.size == 0:
             return crop
-        # Làm mịn ô nén H.265/JPEG trước khi phóng to để tránh khuếch đại vân gợn
-        clean = cv2.bilateralFilter(crop, d=5, sigmaColor=32, sigmaSpace=32)
-        h, w = clean.shape[:2]
-        if w < min_width:
-            scale = min_width / float(max(1, w))
-            clean = cv2.resize(
-                clean,
+        work = crop if is_plate else cv2.bilateralFilter(crop, d=3, sigmaColor=22, sigmaSpace=22)
+        h, w = work.shape[:2]
+        if w < min_width or h < min_width:
+            scale = min_width / float(max(1, min(w, h)))
+            work = cv2.resize(
+                work,
                 (max(2, int(round(w * scale))), max(2, int(round(h * scale)))),
                 interpolation=cv2.INTER_LANCZOS4,
             )
 
-        lab = cv2.cvtColor(clean, cv2.COLOR_BGR2LAB)
+        lab = cv2.cvtColor(work, cv2.COLOR_BGR2LAB)
         l_ch, a_ch, b_ch = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=1.3, tileGridSize=(4, 4))
+        clahe = cv2.createCLAHE(clipLimit=2.4 if is_plate else 1.35, tileGridSize=(4, 4))
         l_eq = clahe.apply(l_ch)
         balanced = cv2.cvtColor(cv2.merge((l_eq, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
 
-        blur = cv2.GaussianBlur(balanced, (0, 0), sigmaX=1.0)
-        return cv2.addWeighted(balanced, 1.15, blur, -0.15, 0)
+        blur = cv2.GaussianBlur(balanced, (0, 0), sigmaX=1.0 if is_plate else 1.1)
+        alpha = 1.45 if is_plate else 1.18
+        return cv2.addWeighted(balanced, alpha, blur, -(alpha - 1.0), 0)
 
     @staticmethod
     def _clamp_box(x1: int, y1: int, x2: int, y2: int, img_w: int, img_h: int):
@@ -99,18 +119,26 @@ class FaceAndPlateEnhancer:
         green_mask = cv2.inRange(hsv, (32, 35, 30), (92, 255, 255))
         return (cv2.countNonZero(green_mask) / float(crop.shape[0] * crop.shape[1])) > 0.35
 
+    @staticmethod
+    def _is_red_object(crop: np.ndarray) -> bool:
+        if crop is None or crop.size == 0:
+            return False
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        r1 = cv2.inRange(hsv, (0, 80, 70), (14, 255, 255))
+        r2 = cv2.inRange(hsv, (165, 80, 70), (180, 255, 255))
+        red_pixels = cv2.countNonZero(r1) + cv2.countNonZero(r2)
+        return (red_pixels / float(crop.shape[0] * crop.shape[1])) > 0.22
+
     def _find_plate_in_vehicle(self, veh_crop: np.ndarray):
         vh, vw = veh_crop.shape[:2]
         if vw < 40 or vh < 30:
             return None
         gray = cv2.cvtColor(veh_crop, cv2.COLOR_BGR2GRAY)
-        if self.plate_cascade is not None:
-            for (px, py, pw, ph) in self.plate_cascade.detectMultiScale(gray, 1.1, 3, minSize=(28, 12)):
-                if 1.1 <= (pw / float(max(1, ph))) <= 5.2:
-                    return self._clamp_box(px - 8, py - 6, px + pw + 8, py + ph + 6, vw, vh)
+        best_box = None
+        best_score = 0.0
 
-        # Tìm vùng biển số sáng/tương phản cao ở nửa dưới thân xe
-        rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
+        # 1) Tìm các vùng ứng viên bằng BlackHat + SobelX (lọc bỏ đèn hậu đỏ & lá xanh)
+        rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 5))
         blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rect_kernel)
         grad_x = np.absolute(cv2.Sobel(blackhat, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=3))
         max_v = float(np.max(grad_x)) or 1.0
@@ -118,16 +146,36 @@ class FaceAndPlateEnhancer:
         grad_x = cv2.morphologyEx(cv2.GaussianBlur(grad_x, (3, 3), 0), cv2.MORPH_CLOSE, rect_kernel)
         _, thresh = cv2.threshold(grad_x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:6]:
-            cx, cy, cw, ch = cv2.boundingRect(c)
+
+        cand_rects = [cv2.boundingRect(c) for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:10]]
+        if self.plate_cascade is not None:
+            for rect in self.plate_cascade.detectMultiScale(gray, 1.1, 3, minSize=(24, 12)):
+                cand_rects.append(tuple(int(v) for v in rect))
+
+        for (cx, cy, cw, ch) in cand_rects:
             ratio = cw / float(max(1, ch))
-            if cy < int(vh * 0.28):
+            area = cw * ch
+            if cy < int(vh * 0.28) or area < 260 or area > int(vw * vh * 0.28):
                 continue
-            if (cw * ch) >= 350 and (1.1 <= ratio <= 4.8):
-                roi = veh_crop[cy : cy + ch, cx : cx + cw]
-                if not self._is_green_foliage(roi) and float(np.std(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY))) > 32.0:
-                    return self._clamp_box(cx - 10, cy - 8, cx + cw + 10, cy + ch + 8, vw, vh)
-        return None
+            if not (1.0 <= ratio <= 4.8):
+                continue
+            roi = veh_crop[cy : cy + ch, cx : cx + cw]
+            if roi.size == 0 or self._is_green_foliage(roi) or self._is_red_object(roi):
+                continue
+            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            # Biển số trắng/bạc hoặc vàng có độ sáng cao & tương phản chữ đen rõ
+            bright_neutral = cv2.inRange(hsv_roi, (0, 0, 125), (180, 75, 255))
+            bright_yellow = cv2.inRange(hsv_roi, (15, 70, 115), (38, 255, 255))
+            plate_bg_ratio = (cv2.countNonZero(bright_neutral) + cv2.countNonZero(bright_yellow)) / float(area)
+            contrast = float(np.std(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)))
+            if plate_bg_ratio < 0.22 or contrast < 28.0:
+                continue
+            score = plate_bg_ratio * contrast * min(2.0, area / 600.0)
+            if score > best_score:
+                best_score = score
+                best_box = self._clamp_box(cx - 14, cy - 10, cx + cw + 14, cy + ch + 10, vw, vh)
+
+        return best_box
 
     def extract_detail_crops(
         self,
@@ -175,13 +223,14 @@ class FaceAndPlateEnhancer:
             has_person_top = (ratio <= 1.55) or (plate_box is not None and bh >= 65)
 
             if has_person_top and person_count < 2:
-                pad_x = int(bw * 0.22)
-                top_y = max(0, by - int(bh * 0.10))
-                shoulder_y = min(ih, by + max(36, int(bh * 0.45)))
+                pad_x = int(bw * 0.32)
+                top_y = max(0, by - int(bh * 0.35))
+                shoulder_y = min(ih, by + max(42, int(bh * 0.45)))
                 x1, y1, x2, y2 = self._clamp_box(bx - pad_x, top_y, bx + bw + pad_x, shoulder_y, iw, ih)
+                x1, y1, x2, y2 = self._make_square_box(x1, y1, x2, y2, iw, ih)
                 if (x2 - x1) >= 24 and (y2 - y1) >= 24:
                     person_count += 1
-                    enhanced = self.enhance_zoom_crop(img[y1:y2, x1:x2], min_width=360)
+                    enhanced = self.enhance_zoom_crop(img[y1:y2, x1:x2], min_width=440, is_plate=False)
                     out_file = f"snapshots/{prefix}_person{person_count}.jpg"
                     cv2.imwrite(out_file, enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                     details.append({
@@ -191,8 +240,10 @@ class FaceAndPlateEnhancer:
                     })
 
             if is_rider_or_vehicle and vehicle_count < 1 and veh_crop.size > 0 and (vx2 - vx1) >= 48:
+                svx1, svy1, svx2, svy2 = self._make_square_box(vx1, vy1, vx2, vy2, iw, ih)
+                veh_sq = img[svy1:svy2, svx1:svx2]
                 vehicle_count += 1
-                enhanced_veh = self.enhance_zoom_crop(veh_crop, min_width=460)
+                enhanced_veh = self.enhance_zoom_crop(veh_sq, min_width=480, is_plate=False)
                 out_veh = f"snapshots/{prefix}_vehicle{vehicle_count}.jpg"
                 cv2.imwrite(out_veh, enhanced_veh, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                 details.append({
@@ -202,7 +253,10 @@ class FaceAndPlateEnhancer:
                 })
                 if plate_box is not None:
                     px1, py1, px2, py2 = plate_box
-                    enhanced_plate = self.enhance_zoom_crop(veh_crop[py1:py2, px1:px2], min_width=360)
+                    gpx1, gpy1, gpx2, gpy2 = self._make_square_box(
+                        vx1 + px1, vy1 + py1, vx1 + px2, vy1 + py2, iw, ih
+                    )
+                    enhanced_plate = self.enhance_zoom_crop(img[gpy1:gpy2, gpx1:gpx2], min_width=440, is_plate=True)
                     out_plate = f"snapshots/{prefix}_plate{vehicle_count}.jpg"
                     cv2.imwrite(out_plate, enhanced_plate, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                     details.append({
