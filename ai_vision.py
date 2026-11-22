@@ -47,6 +47,173 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stime
 
 
 
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    HAS_PIL = True
+except Exception:
+    Image = ImageDraw = ImageFont = None
+    HAS_PIL = False
+
+
+class AIOverlayRenderer:
+    """Vẽ khung nhận diện AI, khung xương (nếu có Pose) & nhãn tiếng Việt lên khung hình."""
+
+    POSE_CONNECTIONS = (
+        (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+        (11, 23), (12, 24), (23, 24), (23, 25), (25, 27),
+        (24, 26), (26, 28), (0, 11), (0, 12),
+    )
+
+    COLORS_BGR = {
+        "fall": (58, 58, 239),       # Đỏ nổi bật: Người té ngã
+        "rider": (11, 158, 245),     # Cam: Người đi xe
+        "vehicle": (246, 130, 59),   # Xanh dương: Xe
+        "person": (129, 185, 16),    # Xanh ngọc: Người di chuyển
+    }
+
+    ASCII_LABELS = {
+        "Người té ngã": "Nguoi te nga",
+        "Người đi xe": "Nguoi di xe",
+        "Xe": "Xe",
+        "Người di chuyển": "Nguoi di chuyen",
+    }
+
+    def __init__(self):
+        self._fonts = {}
+        self._font_path = self._find_unicode_font()
+
+    @staticmethod
+    def _find_unicode_font() -> Optional[str]:
+        candidates = (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+            "/system/fonts/Roboto-Bold.ttf",
+        )
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return None
+
+    def _get_font(self, size: int):
+        if not HAS_PIL or not self._font_path:
+            return None
+        if size not in self._fonts:
+            try:
+                self._fonts[size] = ImageFont.truetype(self._font_path, size)
+            except Exception:
+                self._fonts[size] = None
+        return self._fonts[size]
+
+    @staticmethod
+    def _draw_corner_box(img: np.ndarray, x1: int, y1: int, x2: int, y2: int, color: tuple, thickness: int = 2):
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
+        cl = max(8, min(22, (x2 - x1) // 4, (y2 - y1) // 4))
+        for (px, py, dx, dy) in (
+            (x1, y1, 1, 1), (x2, y1, -1, 1),
+            (x1, y2, 1, -1), (x2, y2, -1, -1),
+        ):
+            cv2.line(img, (px, py), (px + dx * cl, py), color, thickness + 1, cv2.LINE_AA)
+            cv2.line(img, (px, py), (px, py + dy * cl), color, thickness + 1, cv2.LINE_AA)
+
+    @staticmethod
+    def _draw_fallback_posture(img: np.ndarray, x1: int, y1: int, x2: int, y2: int, kind: str, color: tuple):
+        """Vẽ khung xương định hướng trực quan khi chạy OpenCV (chưa có MediaPipe)."""
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        cx = (x1 + x2) // 2
+        if kind == "person":
+            head_y = y1 + max(6, int(bh * 0.14))
+            sh_y = y1 + int(bh * 0.28)
+            hip_y = y1 + int(bh * 0.56)
+            foot_y = y2 - max(4, int(bh * 0.06))
+            r = max(4, min(12, int(bw * 0.16)))
+            cv2.circle(img, (cx, head_y), r, color, 2, cv2.LINE_AA)
+            cv2.line(img, (cx - int(bw * 0.24), sh_y), (cx + int(bw * 0.24), sh_y), color, 2, cv2.LINE_AA)
+            cv2.line(img, (cx, head_y + r), (cx, hip_y), color, 2, cv2.LINE_AA)
+            cv2.line(img, (cx, hip_y), (cx - int(bw * 0.18), foot_y), color, 2, cv2.LINE_AA)
+            cv2.line(img, (cx, hip_y), (cx + int(bw * 0.18), foot_y), color, 2, cv2.LINE_AA)
+        elif kind == "fall":
+            cy = (y1 + y2) // 2
+            head_x = x1 + max(8, int(bw * 0.15))
+            sh_x = x1 + int(bw * 0.30)
+            hip_x = x1 + int(bw * 0.60)
+            foot_x = x2 - max(6, int(bw * 0.08))
+            r = max(4, min(12, int(bh * 0.18)))
+            cv2.circle(img, (head_x, cy), r, color, 2, cv2.LINE_AA)
+            cv2.line(img, (head_x + r, cy), (hip_x, cy), color, 2, cv2.LINE_AA)
+            cv2.line(img, (sh_x, cy - int(bh * 0.22)), (sh_x, cy + int(bh * 0.22)), color, 2, cv2.LINE_AA)
+            cv2.line(img, (hip_x, cy), (foot_x, cy - int(bh * 0.18)), color, 2, cv2.LINE_AA)
+            cv2.line(img, (hip_x, cy), (foot_x, cy + int(bh * 0.18)), color, 2, cv2.LINE_AA)
+
+    def render(self, frame: np.ndarray, detections: list, skeleton: Optional[list] = None, y_offset: int = 0, region_h: Optional[int] = None) -> np.ndarray:
+        if frame is None or frame.size == 0 or (not detections and not skeleton):
+            return frame
+        out = frame.copy()
+        ih, iw = out.shape[:2]
+        rh = region_h or ih
+
+        # 1. Vẽ khung xương MediaPipe Pose nếu có
+        if skeleton:
+            pts = {}
+            for idx, (nx, ny, vis) in enumerate(skeleton):
+                if vis >= 0.35:
+                    px = int(max(0, min(iw - 1, nx * iw)))
+                    py = int(max(0, min(ih - 1, y_offset + ny * rh)))
+                    pts[idx] = (px, py)
+            skel_color = (58, 58, 239) if any(d.get("kind") == "fall" for d in detections) else (0, 235, 160)
+            for a, b in self.POSE_CONNECTIONS:
+                if a in pts and b in pts:
+                    cv2.line(out, pts[a], pts[b], skel_color, 2, cv2.LINE_AA)
+            for pt in pts.values():
+                cv2.circle(out, pt, 3, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(out, pt, 3, skel_color, 1, cv2.LINE_AA)
+
+        # 2. Vẽ khung bao & khung xương dẫn hướng
+        label_jobs = []
+        for det in detections:
+            bx, by, bw, bh = det["box"]
+            x1 = max(0, bx)
+            y1 = max(0, y_offset + by)
+            x2 = min(iw - 1, bx + bw)
+            y2 = min(ih - 1, y_offset + by + bh)
+            if x2 <= x1 + 4 or y2 <= y1 + 4:
+                continue
+            kind = det.get("kind", "person")
+            color = self.COLORS_BGR.get(kind, (129, 185, 16))
+            self._draw_corner_box(out, x1, y1, x2, y2, color, thickness=3 if kind == "fall" else 2)
+            if not skeleton and kind in ("person", "fall"):
+                self._draw_fallback_posture(out, x1, y1, x2, y2, kind, color)
+            label_jobs.append((x1, y1, det.get("label", "Người di chuyển"), color))
+
+        # 3. Vẽ nhãn chữ tiếng Việt có dấu (PIL) hoặc fallback ASCII (OpenCV)
+        font_size = 15 if iw >= 640 else 13
+        font = self._get_font(font_size)
+        if font is not None and label_jobs:
+            pil_img = Image.fromarray(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(pil_img)
+            for (x1, y1, lbl, color_bgr) in label_jobs:
+                color_rgb = (color_bgr[2], color_bgr[1], color_bgr[0])
+                bbox = draw.textbbox((0, 0), lbl, font=font)
+                tw = (bbox[2] - bbox[0]) + 12
+                th = (bbox[3] - bbox[1]) + 8
+                ly1 = max(0, y1 - th - 2) if y1 >= th + 4 else min(ih - th - 1, y1 + 2)
+                lx2 = min(iw - 1, x1 + tw)
+                draw.rectangle([x1, ly1, lx2, ly1 + th], fill=color_rgb)
+                draw.text((x1 + 6, ly1 + 3), lbl, font=font, fill=(255, 255, 255))
+            out = cv2.cvtColor(np.asarray(pil_img), cv2.COLOR_RGB2BGR)
+        else:
+            for (x1, y1, lbl, color_bgr) in label_jobs:
+                txt = self.ASCII_LABELS.get(lbl, lbl)
+                (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                ly1 = max(0, y1 - th - 10) if y1 >= th + 12 else min(ih - th - 10, y1 + 2)
+                cv2.rectangle(out, (x1, ly1), (min(iw - 1, x1 + tw + 10), ly1 + th + 8), color_bgr, -1)
+                cv2.putText(out, txt, (x1 + 5, ly1 + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        return out
+
+
 class AdaptiveAILearner:
     """Tự học nhẹ từ phản hồi Đúng/Sai của người dùng: giảm báo giả vùng cây cối & ưu tiên vùng đường đi."""
 
@@ -656,12 +823,15 @@ class CameraAIProcessor:
         self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
         self.enhancer = FaceAndPlateEnhancer()
         self.learner = AdaptiveAILearner()
+        self.overlay_renderer = AIOverlayRenderer()
+        self.overlay_cache = {}  # (cam_id, lens_idx) -> {"ts": float, "detections": list, "skeleton": list}
+        self.ai_overlay_enabled = os.environ.get("CAMHUB_AI_OVERLAY", "1") != "0"
 
         self.recorders = {}
         self.clip_managers = {}
         self.audio_subs = {}  # cam_id -> set of queue.Queue
         self.audio_lock = threading.Lock()
-        self.long_clip_sec = int(os.environ.get("CAMHUB_LONG_CLIP_SEC", "1800"))
+        self.long_clip_sec = int(os.environ.get("CAMHUB_LONG_CLIP_SEC", "3600"))
         self.active_engine_label = self._resolve_engine_label()
         threading.Thread(target=self._thermal_guard_loop, daemon=True).start()
         if HAS_MP_TASKS and not HAS_MP_LEGACY and not os.path.exists(POSE_TASK_PATH):
@@ -773,6 +943,7 @@ class CameraAIProcessor:
             keys_to_del = [k for k in self.frames if k[0] == cam_id]
             for k in keys_to_del:
                 self.frames.pop(k, None)
+                self.overlay_cache.pop(k, None)
             self.cam_status.pop(cam_id, None)
 
     def get_latest_frame(self, cam_id: str, lens: int = 0) -> Optional[bytes]:
@@ -1161,11 +1332,20 @@ class CameraAIProcessor:
 
                 ts_ms = int(now * 1000)
                 snap_file = f"snapshots/motion_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
-                with open(snap_file, "wb") as f:
-                    f.write(best["jpg"])
                 details = self.enhancer.extract_detail_crops(
                     best["img"], f"motion_{cam_id}_L{lens_idx}_{ts_ms}", best["boxes"], cam_id=cam_id, lens_idx=lens_idx, learner=self.learner
                 )
+                overview_jpg = best["jpg"]
+                if self.ai_overlay_enabled:
+                    with self.frames_lock:
+                        ov = self.overlay_cache.get((cam_id, lens_idx))
+                    if ov and (now - ov["ts"]) <= 4.5:
+                        ann = self.overlay_renderer.render(best["img"], ov["detections"], ov["skeleton"])
+                        ok_ov, buf_ov = cv2.imencode(".jpg", ann, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                        if ok_ov:
+                            overview_jpg = buf_ov.tobytes()
+                with open(snap_file, "wb") as f:
+                    f.write(overview_jpg)
                 self.on_alert({
                     "id": f"motion_{cam_id}_{lens_idx}_{ts_ms}_{uuid.uuid4().hex[:6]}",
                     "type": "motion",
@@ -1180,26 +1360,63 @@ class CameraAIProcessor:
                     "timestamp": now_vn().strftime("%Y-%m-%d %H:%M:%S"),
                 })
 
+        is_horizontal = False
+        skeleton_pts = []
         if has_motion or (st["horizontal_start_time"] is not None):
-            is_horizontal = False
             if local_pose is not None:
                 rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
                 results = local_pose.process(rgb)
                 if results and results.pose_landmarks:
-                    angle = self._calculate_body_angle_landmarks(results.pose_landmarks.landmark)
+                    lms = results.pose_landmarks.landmark
+                    angle = self._calculate_body_angle_landmarks(lms)
                     is_horizontal = angle > 58.0
+                    skeleton_pts = [(float(pt.x), float(pt.y), float(getattr(pt, "visibility", 1.0))) for pt in lms]
             elif task_landmarker is not None:
                 try:
                     rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                     res = task_landmarker.detect(mp_image)
                     if res and res.pose_landmarks and len(res.pose_landmarks) > 0:
-                        angle = self._calculate_body_angle_landmarks(res.pose_landmarks[0])
+                        lms = res.pose_landmarks[0]
+                        angle = self._calculate_body_angle_landmarks(lms)
                         is_horizontal = angle > 58.0
+                        skeleton_pts = [(float(pt.x), float(pt.y), float(getattr(pt, "visibility", 1.0))) for pt in lms]
                 except Exception:
                     is_horizontal = self._detect_fall_opencv_smart(small, fg_clean, st, now)
             else:
                 is_horizontal = self._detect_fall_opencv_smart(small, fg_clean, st, now)
+
+        # Phân loại các vật thể đang di chuyển để hiển thị khung AI & nhãn trực tiếp
+        ih, iw = lens_img.shape[:2]
+        detections = []
+        if person_boxes:
+            sorted_boxes = sorted(person_boxes, key=lambda b: b[2] * b[3], reverse=True)[:5]
+            for idx_b, (bx, by, bw, bh) in enumerate(sorted_boxes):
+                if bw < 26 or bh < 26 or (bw * bh) < 1200:
+                    continue
+                if by < int(ih * 0.08) and bh < int(ih * 0.16):
+                    continue
+                roi_chk = lens_img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
+                if self.enhancer._is_green_foliage(roi_chk):
+                    continue
+                ratio = bw / float(max(1, bh))
+                if is_horizontal and idx_b == 0:
+                    detections.append({"box": (bx, by, bw, bh), "kind": "fall", "label": "Người té ngã"})
+                elif ratio >= 0.72:
+                    if ratio <= 1.55:
+                        detections.append({"box": (bx, by, bw, bh), "kind": "rider", "label": "Người đi xe"})
+                    else:
+                        detections.append({"box": (bx, by, bw, bh), "kind": "vehicle", "label": "Xe"})
+                else:
+                    detections.append({"box": (bx, by, bw, bh), "kind": "person", "label": "Người di chuyển"})
+
+        if detections or skeleton_pts:
+            with self.frames_lock:
+                self.overlay_cache[(cam_id, lens_idx)] = {
+                    "ts": now,
+                    "detections": detections,
+                    "skeleton": skeleton_pts,
+                }
 
             if is_horizontal:
                 if st["horizontal_start_time"] is None:
@@ -1207,11 +1424,17 @@ class CameraAIProcessor:
                 elif (now - st["horizontal_start_time"]) >= 2.5 and (now - st["last_fall_alert"] > 20.0):
                     ts_ms = int(now * 1000)
                     snap_file = f"snapshots/fall_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
-                    with open(snap_file, "wb") as f:
-                        f.write(lens_jpg)
                     details = self.enhancer.extract_detail_crops(
                         lens_img, f"fall_{cam_id}_L{lens_idx}_{ts_ms}", person_boxes, cam_id=cam_id, lens_idx=lens_idx, learner=self.learner
                     )
+                    fall_jpg = lens_jpg
+                    if self.ai_overlay_enabled:
+                        ann_f = self.overlay_renderer.render(lens_img, detections, skeleton_pts)
+                        ok_f, buf_f = cv2.imencode(".jpg", ann_f, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                        if ok_f:
+                            fall_jpg = buf_f.tobytes()
+                    with open(snap_file, "wb") as f:
+                        f.write(fall_jpg)
                     cm = self.clip_managers.get(cam_id)
                     if cm is not None:
                         cm.trigger_clip("fall")
@@ -1287,9 +1510,49 @@ class CameraAIProcessor:
         if cm is not None and self.has_ffmpeg_cli:
             cm.push_frame(jpg_bytes)
 
+        live_full_jpg = jpg_bytes
+        live_lens_jpegs = lens_jpegs
+        if self.ai_overlay_enabled:
+            with self.frames_lock:
+                ov_map = {
+                    idx: dict(self.overlay_cache[(cam_id, idx)])
+                    for idx in range(1, lens_count + 1)
+                    if (cam_id, idx) in self.overlay_cache and (now - self.overlay_cache[(cam_id, idx)]["ts"]) <= 1.5
+                }
+            if ov_map:
+                if lens_count == 1 and 1 in ov_map:
+                    ann_single = self.overlay_renderer.render(lenses[0], ov_map[1]["detections"], ov_map[1]["skeleton"])
+                    ok_s, buf_s = cv2.imencode(".jpg", ann_single, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                    if ok_s:
+                        live_full_jpg = buf_s.tobytes()
+                        live_lens_jpegs = [(1, live_full_jpg)]
+                else:
+                    new_lens_jpegs = []
+                    full_ann = frame.copy()
+                    step_h = frame.shape[0] // lens_count
+                    for idx, crop in enumerate(lenses, start=1):
+                        ov = ov_map.get(idx)
+                        if ov:
+                            ann_l = self.overlay_renderer.render(crop, ov["detections"], ov["skeleton"])
+                            ok_l, buf_l = cv2.imencode(".jpg", ann_l, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                            if ok_l:
+                                new_lens_jpegs.append((idx, buf_l.tobytes()))
+                            else:
+                                new_lens_jpegs.append((idx, dict(lens_jpegs).get(idx, jpg_bytes)))
+                            y_off = (idx - 1) * step_h
+                            full_ann = self.overlay_renderer.render(
+                                full_ann, ov["detections"], ov["skeleton"], y_offset=y_off, region_h=crop.shape[0]
+                            )
+                        else:
+                            new_lens_jpegs.append((idx, dict(lens_jpegs).get(idx, jpg_bytes)))
+                    live_lens_jpegs = new_lens_jpegs
+                    ok_f, buf_f = cv2.imencode(".jpg", full_ann, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                    if ok_f:
+                        live_full_jpg = buf_f.tobytes()
+
         with self.frames_lock:
-            self.frames[(cam_id, 0)] = jpg_bytes
-            for idx, l_jpg in lens_jpegs:
+            self.frames[(cam_id, 0)] = live_full_jpg
+            for idx, l_jpg in live_lens_jpegs:
                 self.frames[(cam_id, idx)] = l_jpg
             self.cam_status[cam_id] = {
                 "online": True,
@@ -1352,7 +1615,7 @@ class CameraAIProcessor:
                     src_url, transport = sources[src_idx % len(sources)]
                     state["force_reconnect"] = False
                     state["last_unique_ts"] = time.time()
-                    with_audio = state.get("with_audio", True)
+                    with_audio = False  # Chỉ ghi âm thanh vào video Xem lại; không stream MP3 trực tiếp để tối ưu độ ổn định
                     for jpg in self._iter_ffmpeg_jpegs(src_url, transport, stop_event, cam_id, with_audio=with_audio):
                         got_frame = True
                         retry_delay = 3.0
