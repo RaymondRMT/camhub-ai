@@ -9,6 +9,7 @@ TEST_DIR = tempfile.TemporaryDirectory(prefix="camhub_test_")
 os.environ["CAMHUB_DB_PATH"] = os.path.join(TEST_DIR.name, "test_camhub.db")
 os.environ["CAMHUB_SECRET_FILE"] = os.path.join(TEST_DIR.name, ".jwt_secret")
 os.environ["CAMHUB_DISABLE_TUNNEL"] = "1"
+os.environ["CAMHUB_AI_LEARN_FILE"] = os.path.join(TEST_DIR.name, "ai_learning.json")
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -198,6 +199,12 @@ class CamHubEndToEndTests(unittest.TestCase):
         self.assertTrue(chk["has_telegram"])
         self.assertTrue(chk["has_fixed_domain"])
         self.assertTrue(chk["has_family_members"])
+
+        # 5. Kiểm tra API AI tự học từ phản hồi Đúng / Báo nhầm
+        alert_id = r_fall.json()["alert"]["id"]
+        r_fb = self.client.post(f"/api/alerts/{alert_id}/feedback", headers=hdr, json={"verdict": "false"})
+        self.assertEqual(r_fb.status_code, 200)
+        self.assertEqual(r_fb.json()["summary"]["total_false"], 1)
 
 
 if __name__ == "__main__":
