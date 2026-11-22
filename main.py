@@ -1216,6 +1216,34 @@ def camera_mjpeg_stream(cam_id: str, lens: int = Query(0, ge=0, le=4), user: dic
     )
 
 
+
+@app.get("/api/cameras/{cam_id}/audio")
+def camera_live_audio(cam_id: str, user: dict = Depends(get_stream_user)):
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT name FROM cameras WHERE id=?", (cam_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+
+    q = ai_engine.subscribe_audio(cam_id)
+
+    def _gen():
+        try:
+            while True:
+                try:
+                    chunk = q.get(timeout=5.0)
+                    yield chunk
+                except Exception:
+                    continue
+        finally:
+            ai_engine.unsubscribe_audio(cam_id, q)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store, no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 def get_onvif_ptz(cam_id: str):
     if not HAS_ONVIF or ONVIFCamera is None:
         raise HTTPException(status_code=503, detail="Thư viện ONVIF (onvif-zeep) chưa được cài đặt trên thiết bị")
