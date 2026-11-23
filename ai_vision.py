@@ -1026,6 +1026,38 @@ class CameraAIProcessor:
         return math.degrees(math.atan2(dx, dy))
 
     @staticmethod
+    def _is_night_or_ir(small_bgr: np.ndarray) -> bool:
+        """Nhận biết chế độ ban đêm hoặc hồng ngoại trắng đen để bật lọc vệt đèn rọi."""
+        hsv = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2HSV)
+        mean_sat = float(np.mean(hsv[:, :, 1]))
+        mean_val = float(np.mean(hsv[:, :, 2]))
+        return (mean_sat < 16.0) or (mean_val < 92.0)
+
+    @staticmethod
+    def _has_new_foreground_edges(small_bgr: np.ndarray, ref_gray: Optional[np.ndarray], box: tuple) -> bool:
+        """Ban đêm: kiểm tra có đường viền MỚI của người/xe hay chỉ là bậc cửa/nền sân cũ bị đèn rọi sáng lên."""
+        if ref_gray is None:
+            return True
+        x, y, w, h = box
+        ih, iw = small_bgr.shape[:2]
+        x1, y1 = max(0, x), max(0, y)
+        x2, y2 = min(iw, x + w), min(ih, y + h)
+        area = (x2 - x1) * (y2 - y1)
+        if area < 100:
+            return False
+        cur_roi = cv2.cvtColor(small_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        ref_roi = ref_gray[y1:y2, x1:x2]
+        # Cân bằng độ sáng cục bộ để không tính nhầm vùng nền cũ chỉ tăng độ sáng do đèn pha
+        cur_eq = cv2.normalize(cur_roi, None, 0, 255, cv2.NORM_MINMAX)
+        ref_eq = cv2.normalize(ref_roi, None, 0, 255, cv2.NORM_MINMAX)
+        cur_edges = cv2.Canny(cur_eq, 50, 140)
+        ref_edges = cv2.Canny(ref_eq, 50, 140)
+        ref_dilated = cv2.dilate(ref_edges, np.ones((5, 5), np.uint8))
+        new_edges = cv2.bitwise_and(cur_edges, cv2.bitwise_not(ref_dilated))
+        new_ratio = cv2.countNonZero(new_edges) / float(max(1, area))
+        return new_ratio >= 0.013
+
+    @staticmethod
     def _has_object_structure(small_bgr: np.ndarray, box: tuple) -> bool:
         """Phân biệt vật thể thật (người/xe có đường nét) với vùng loá đèn pha trên nền xi măng/tường."""
         x, y, w, h = box
@@ -1102,6 +1134,8 @@ class CameraAIProcessor:
             return False
         fx, y, w, h = cv2.boundingRect(largest)
         if not self._has_object_structure(small_bgr, (fx, y, w, h)):
+            return False
+        if st.get("is_night") and not self._has_new_foreground_edges(small_bgr, st.get("ref_gray"), (fx, y, w, h)):
             return False
         aspect = w / float(h + 1e-6)
 
@@ -1412,15 +1446,19 @@ class CameraAIProcessor:
         st["frames_seen"] += 1
 
         small = cv2.resize(lens_img, (480, 270))
-        cur_luma = float(np.mean(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)))
+        cur_gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        cur_luma = float(np.mean(cur_gray))
         prev_luma = st.get("prev_luma")
         st["prev_luma"] = cur_luma
         luma_jump = (prev_luma is not None) and (abs(cur_luma - prev_luma) > 18.0)
+        is_night = self._is_night_or_ir(small)
+        st["is_night"] = is_night
 
         h_start = st["horizontal_start_time"]
         lr = 0.25 if luma_jump else (0.0 if (h_start is not None and (now - h_start) < 10.0) else -1.0)
         fg_mask = st["bg"].apply(small, learningRate=lr)
         if st["frames_seen"] <= 6:
+            st["ref_gray"] = cur_gray.copy()
             return
         fg_clean = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         fg_pixels = cv2.countNonZero(fg_clean)
@@ -1428,10 +1466,13 @@ class CameraAIProcessor:
         if luma_jump or (fg_pixels > int(480 * 270 * 0.45)):
             st["burst_active"] = False
             st["burst_best"] = None
+            st["ref_gray"] = cv2.addWeighted(st.get("ref_gray", cur_gray), 0.7, cur_gray, 0.3, 0)
             return
 
         learned_thresh = self.learner.get_motion_threshold(cam_id, lens_idx)
         has_motion = fg_pixels > learned_thresh
+        if not has_motion:
+            st["ref_gray"] = cv2.addWeighted(st.get("ref_gray", cur_gray), 0.85, cur_gray, 0.15, 0)
 
         person_boxes = []
         norm_boxes = []
@@ -1443,6 +1484,8 @@ class CameraAIProcessor:
                 if cv2.contourArea(c) >= 1200:
                     bx, by, bw, bh = cv2.boundingRect(c)
                     if not self._has_object_structure(small, (bx, by, bw, bh)):
+                        continue
+                    if is_night and not self._has_new_foreground_edges(small, st.get("ref_gray"), (bx, by, bw, bh)):
                         continue
                     rx, ry, rw, rh = int(bx * sx), int(by * sy), int(bw * sx), int(bh * sy)
                     nb = (rx / float(max(1, iw)), ry / float(max(1, ih)), rw / float(max(1, iw)), rh / float(max(1, ih)))
