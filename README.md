@@ -4,9 +4,9 @@ Biến điện thoại Android (chạy máy chủ **Ubuntu qua Termux `proot-dis
 
 ## Tính năng chính
 
-- **AI Phát hiện Té ngã, Người & Xe theo thời gian thực:**
-  - Phân tích khung xương bằng **MediaPipe Pose** (tự động chuyển sang **OpenCV Person + Fall AI** nếu phần cứng không hỗ trợ wheel), tích hợp **Thermal Guard** tự giảm tải khi máy nóng > 43°C.
-  - **Khung AI & Nhãn tiếng Việt trực tiếp (`Khung AI: BẬT/TẮT`):** Vẽ khung bao, khung xương và gắn nhãn **Người di chuyển**, **Người đi xe**, **Xe**, **Người té ngã** trực tiếp trên luồng xem và ảnh toàn cảnh.
+- **AI Deep Learning (`YOLOv5n ONNX`) & Phát hiện Té ngã theo thời gian thực:**
+  - Tự động tải mô hình nhẹ **`yolov5n.onnx`** (chạy qua `cv2.dnn`) kết hợp **MediaPipe Pose / OpenCV Fall AI** và **Thermal Guard** (tự giảm tải khi máy nóng > 43°C).
+  - **Khung AI dày nét & Phân vùng chi tiết (`Khung AI: BẬT/TẮT`):** Vẽ khung bao, khung xương, gắn nhãn **Người di chuyển**, **Người đi xe (Đầu xe / Đuôi xe)**, **Ô tô (Đầu xe / Đuôi xe)**, **Xe tải**, **Người té ngã** kèm khung phụ riêng cho **Khuôn mặt (từ vai lên)** và **Vùng biển số xe**.
   - **Bộ lọc chống loá đèn pha ban đêm:** Tự nhận biết chớp sáng toàn khung hình và loại bỏ vệt sáng mịn trên sân/tường để tránh báo giả vào ban đêm.
 - **AI Tự học theo phản hồi (`👍 Chính xác`, `🔢 Sai biển số`, `👎 Báo nhầm`):**
   - Tự động điều chỉnh ngưỡng chuyển động, lọc vùng lá cây/báo giả theo từng mắt camera, nhưng vẫn bắt bình thường nếu có người hoặc xe thật đi vào vùng từng báo nhầm.
@@ -14,7 +14,8 @@ Biến điện thoại Android (chạy máy chủ **Ubuntu qua Termux `proot-dis
   - Thu thập chuỗi khung hình trong 3.5 giây để chọn ảnh sắc nét nhất, gửi đồng thời **ảnh toàn cảnh** + **ảnh cắt vuông 1:1 phóng to** (**Người/Người lái từ vai lên**, **Phương tiện**, **Biển số xe** kèm gợi ý ký tự **Tesseract OCR**) và đường link xem trực tiếp tới nhiều Chat ID cá nhân & Group ID gia đình.
 - **Tách đa mắt thông minh & Xem lại tối ưu (H.264 + AAC):**
   - Tự động tách camera đa ống kính (2–3 mắt dọc như **Yoosee 3 mắt**) thành từng khung `Mắt 1 / Mắt 2 / Mắt 3` độc lập.
-  - Ghi hình xem lại chia màu rõ ràng: **Video dài (60p)** chuẩn H.264 + âm thanh AAC (tạo keyframe mỗi 3 giây để xem được ngay cả khi đang ghi) và các clip sự kiện **Chuyển động / Té ngã (~60s)**. Luồng xem trực tiếp tối giản không phát âm thanh nền để đảm bảo mượt và ổn định qua Tunnel.
+  - Ghi hình xem lại chia màu rõ ràng: **Video dài (60p)** chuẩn H.264 + âm thanh AAC (keyframe mỗi 3 giây) và clip sự kiện **Chuyển động / Té ngã (~60s)**.
+  - **Trình phát Video Pro & HLS VOD chuẩn YouTube:** Chia đoạn 6 giây tức thì (`ffmpeg -c copy`) để phát ngay và tua mượt mà không cần tải cả tệp 200 MB; giao diện phát tùy chỉnh kính mờ với thanh tua xem trước, tốc độ `0.5x–16x`, zoom `2x`, chụp ảnh và tải MP4. Luồng xem trực tiếp tối giản không phát âm thanh nền để mượt qua Tunnel.
 - **Truy cập từ xa Cloudflare Tunnel (Quick & Named Fixed Domain):**
   - Tự khởi tạo link HTTPS miễn phí (`*.trycloudflare.com`) kèm mã **QR Code** chia sẻ nhanh, hoặc gắn **Tên miền cố định (Cloudflare Named Tunnel Token)** dùng một đường link duy nhất vĩnh viễn.
   - Tự động chuyển sang chế độ **Adaptive Snapshot** chống đứng hình khi xem qua Cloudflare Tunnel.
