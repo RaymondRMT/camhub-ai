@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import hmac
 import time
@@ -1664,6 +1665,154 @@ def submit_alert_feedback(alert_id: str, req: AlertFeedbackRequest, user: dict =
 @app.get("/api/ai/learning")
 def get_ai_learning(user: dict = Depends(get_current_user)):
     return ai_engine.learner.get_summary()
+
+
+
+_UPDATE_LOCK = threading.Lock()
+GITHUB_REPO = os.environ.get("CAMHUB_GITHUB_REPO", "RaymondRMT/camhub-ai")
+GITHUB_BRANCH = os.environ.get("CAMHUB_GITHUB_BRANCH", "main")
+
+
+def _get_local_version_info() -> dict:
+    has_git = os.path.isdir(".git") and shutil.which("git") is not None
+    if has_git:
+        try:
+            sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+            meta = subprocess.check_output(["git", "log", "-1", "--format=%s|%ci"], stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+            msg, dt = (meta.split("|", 1) + [""])[:2]
+            return {"has_git": True, "local_sha": sha, "local_message": msg, "local_date": dt}
+        except Exception:
+            pass
+    ver_file = ".camhub_version"
+    if os.path.exists(ver_file):
+        try:
+            with open(ver_file, "r", encoding="utf-8") as f:
+                sha = f.read().strip()
+            if sha:
+                return {"has_git": has_git, "local_sha": sha, "local_message": "Cập nhật từ xa", "local_date": ""}
+        except Exception:
+            pass
+    return {"has_git": has_git, "local_sha": "unknown", "local_message": "Bản cài đặt thủ công", "local_date": ""}
+
+
+def _delayed_self_restart():
+    time.sleep(1.5)
+    try:
+        with ai_engine.workers_lock:
+            cam_ids = list(ai_engine.workers.keys())
+        for cid in cam_ids:
+            ai_engine.stop_camera_monitor(cid)
+    except Exception:
+        pass
+    cmd = [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    if os.name == "nt":
+        try:
+            subprocess.Popen(cmd, cwd=os.getcwd(), creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        except Exception:
+            subprocess.Popen(cmd, cwd=os.getcwd())
+        os._exit(0)
+    else:
+        os.execv(sys.executable, cmd)
+
+
+@app.get("/api/admin/update/check")
+def check_github_update(admin: dict = Depends(require_admin)):
+    local = _get_local_version_info()
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+    try:
+        r = httpx.get(
+            api_url,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "CamHub-AI-Pro"},
+            timeout=6.0,
+        )
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"GitHub API trả về mã {r.status_code}")
+        data = r.json()
+        remote_sha = str(data.get("sha", ""))[:7]
+        commit = data.get("commit") or {}
+        remote_msg = str(commit.get("message", "")).splitlines()[0] if commit.get("message") else ""
+        remote_date = str(((commit.get("committer") or {}).get("date")) or "")
+        has_update = bool(remote_sha and local["local_sha"] != remote_sha)
+        return {
+            **local,
+            "remote_sha": remote_sha,
+            "remote_message": remote_msg,
+            "remote_date": remote_date,
+            "has_update": has_update,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Không thể kiểm tra GitHub: {e}")
+
+
+@app.post("/api/admin/update/apply")
+def apply_github_update(admin: dict = Depends(require_admin)):
+    if not _UPDATE_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Đang có tiến trình cập nhật chạy, vui lòng đợi...")
+    try:
+        has_git = os.path.isdir(".git") and shutil.which("git") is not None
+        new_sha = ""
+        if has_git:
+            subprocess.check_call(["git", "fetch", "origin", GITHUB_BRANCH], timeout=30)
+            subprocess.check_call(["git", "reset", "--hard", f"origin/{GITHUB_BRANCH}"], timeout=30)
+            new_sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], timeout=5).decode().strip()
+        else:
+            import io, zipfile
+            zip_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
+            r = httpx.get(zip_url, follow_redirects=True, timeout=30.0)
+            if r.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Không tải được gói cập nhật ({r.status_code})")
+            skip_names = {"camhub.db", ".jwt_secret", "ai_learning.json", "mediamtx.yml"}
+            skip_dirs = {"recordings", "snapshots", "models", "bin", ".venv", "__pycache__", "hls_stream"}
+            with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    parts = Path(member.filename).parts
+                    if len(parts) < 2:
+                        continue
+                    rel = Path(*parts[1:])
+                    if rel.name in skip_names or any(d in skip_dirs for d in rel.parts):
+                        continue
+                    target = Path(".") / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+            try:
+                chk = httpx.get(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}",
+                    headers={"Accept": "application/vnd.github+json", "User-Agent": "CamHub-AI-Pro"},
+                    timeout=5.0,
+                )
+                if chk.status_code == 200:
+                    new_sha = str(chk.json().get("sha", ""))[:7]
+            except Exception:
+                pass
+        if new_sha:
+            with open(".camhub_version", "w", encoding="utf-8") as f:
+                f.write(new_sha)
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"],
+                timeout=120,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        threading.Thread(target=_delayed_self_restart, daemon=True).start()
+        return {
+            "status": "updating",
+            "new_sha": new_sha,
+            "message": "Đã tải bản cập nhật mới và đang khởi động lại trạm chủ...",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cập nhật thất bại: {e}")
+    finally:
+        _UPDATE_LOCK.release()
 
 
 @app.delete("/api/ai/learning")
