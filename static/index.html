@@ -380,9 +380,9 @@
     }
     .pro-timeline-wrap:hover .pro-timeline-tip { opacity: 1; }
     .pro-ctrl-row {
-      display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: nowrap;
+      display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap;
     }
-    .pro-ctrl-group { display: flex; align-items: center; gap: 4px; }
+    .pro-ctrl-group { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
     .pro-icon-btn {
       background: transparent; border: none; color: #f1f5f9; width: 32px; height: 32px;
       border-radius: 8px; display: inline-flex; align-items: center; justify-content: center;
@@ -399,7 +399,12 @@
     .rec-item-active { background: var(--accent-soft) !important; border-color: var(--accent) !important; }
     @media (max-width: 560px) {
       .pro-vol-slider { display: none; }
-      .pro-icon-btn { width: 29px; height: 29px; }
+      .pro-controls { padding: 18px 8px 8px; gap: 5px; }
+      .pro-ctrl-row { gap: 4px; justify-content: space-between; }
+      .pro-ctrl-group { gap: 2px; }
+      .pro-icon-btn { width: 28px; height: 28px; font-size: 0.72rem; }
+      .pro-time-txt { font-size: 0.70rem; margin: 0 2px; }
+      .pro-speed-select { padding: 2px 4px; font-size: 0.70rem; }
     }
 
   </style>
@@ -599,6 +604,7 @@
             <button class="btn sm grid-opt active" onclick="setGridLayout('grid-2x2', this)">2x2</button>
             <button class="btn sm grid-opt" onclick="setGridLayout('grid-3x3', this)">3x3</button>
           </div>
+          <div id="liveLensFilterBar" style="display:none; gap:6px; align-items:center; flex-wrap:wrap;"></div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn sm active" id="splitLensesBtn" onclick="toggleSplitLenses()" title="Tự động tách camera 2/3 mắt thành các khung riêng">Tách đa mắt: BẬT</button>
             <button class="btn sm active" id="aiOverlayBtn" onclick="toggleAiOverlay()" title="Hiển thị khung nhận diện AI & nhãn đối tượng trực tiếp trên video">Khung AI: BẬT</button>
@@ -671,6 +677,16 @@
                   </div>
                 </div>
               </div>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;" id="playbackLensBar">
+                <span style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">Khung xem lại:</span>
+                <button class="btn sm active pb-lens-btn" onclick="setPlaybackLens(0, this)">Tất cả</button>
+                <button class="btn sm pb-lens-btn" onclick="setPlaybackLens(1, this)">Cam 1</button>
+                <button class="btn sm pb-lens-btn" onclick="setPlaybackLens(2, this)">Cam 2</button>
+                <button class="btn sm pb-lens-btn" onclick="setPlaybackLens(3, this)">Cam 3</button>
+              </div>
+              <span style="font-size:0.76rem; color:var(--text-muted);" id="playbackLensHint">Chọn Cam 1/2/3 để phóng vừa khít khung</span>
             </div>
           </div>
           <div class="card" style="padding:16px; max-height:560px; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
@@ -1012,6 +1028,13 @@
     let focusedCamId = null;
     let focusedLensIndex = 0;
     let splitLensesEnabled = localStorage.getItem("camhub_split_lenses") !== "0";
+    let liveLensFilter = Number(localStorage.getItem("camhub_live_lens_filter") || "0");
+
+    function setLiveLensFilter(lensIdx) {
+      liveLensFilter = Number(lensIdx) || 0;
+      localStorage.setItem("camhub_live_lens_filter", String(liveLensFilter));
+      loadCameras();
+    }
     let safeSnapshotTimers = [];
     let forceSafeStream = localStorage.getItem("camhub_safe_stream") || "auto";
     let ptzSpeed = 0.6;
@@ -1402,11 +1425,31 @@
         modeBtn.innerText = labels[forceSafeStream] || "Chế độ: Tự động";
       }
 
+      const maxLenses = Math.max(1, ...camerasCache.map(c => Number(c.lens_count) || 1));
+      if (liveLensFilter > maxLenses) liveLensFilter = 0;
+      const lensBar = document.getElementById("liveLensFilterBar");
+      if (lensBar) {
+        if (maxLenses > 1 && splitLensesEnabled) {
+          lensBar.style.display = "flex";
+          let btns = `<span style="font-size:0.83rem; font-weight:700; color:var(--text-secondary);">Chọn mắt:</span>`;
+          btns += `<button class="btn sm${liveLensFilter === 0 ? " active" : ""}" onclick="setLiveLensFilter(0)">Tất cả</button>`;
+          for (let l = 1; l <= maxLenses; l++) {
+            btns += `<button class="btn sm${liveLensFilter === l ? " active" : ""}" onclick="setLiveLensFilter(${l})">Cam ${l}</button>`;
+          }
+          lensBar.innerHTML = btns;
+        } else {
+          lensBar.style.display = "none";
+          lensBar.innerHTML = "";
+        }
+      }
+
       const tiles = [];
       camerasCache.forEach(c => {
         const count = (splitLensesEnabled && Number(c.lens_count) > 1) ? Number(c.lens_count) : 1;
         if (count === 1) {
           tiles.push({ cam: c, lens: 0, title: c.name });
+        } else if (liveLensFilter > 0 && liveLensFilter <= count) {
+          tiles.push({ cam: c, lens: liveLensFilter, title: `${c.name} — Mắt ${liveLensFilter}` });
         } else {
           for (let l = 1; l <= count; l++) {
             tiles.push({ cam: c, lens: l, title: `${c.name} — Mắt ${l}` });
@@ -2053,12 +2096,52 @@
       showProControls();
     }
 
+    let playbackLens = Number(localStorage.getItem("camhub_pb_lens") || "0");
+
+    function applyPlaybackTransform() {
+      const v = document.getElementById("playbackVideo");
+      if (!v) return;
+      const vw = v.videoWidth || 0;
+      const vh = v.videoHeight || 0;
+      const ratio = vw > 0 ? (vh / vw) : 1.68;
+      let lensCount = 1;
+      if (ratio >= 1.55) lensCount = 3;
+      else if (ratio >= 1.05) lensCount = 2;
+
+      let baseScale = 1;
+      let shiftY = 0;
+      if (playbackLens > 0 && lensCount > 1) {
+        const idx = Math.min(playbackLens, lensCount);
+        baseScale = lensCount;
+        if (lensCount === 3) {
+          shiftY = idx === 1 ? 33.333 : (idx === 2 ? 0 : -33.333);
+        } else if (lensCount === 2) {
+          shiftY = idx === 1 ? 25 : -25;
+        }
+      }
+      const totalScale = baseScale * (isPlaybackZoomed ? 2 : 1);
+      v.style.transformOrigin = "center center";
+      v.style.transform = `scale(${totalScale}) translateY(${shiftY}%)`;
+    }
+
+    function setPlaybackLens(lensIdx, btn) {
+      playbackLens = Number(lensIdx) || 0;
+      localStorage.setItem("camhub_pb_lens", String(playbackLens));
+      document.querySelectorAll(".pb-lens-btn").forEach(b => b.classList.remove("active"));
+      if (btn) {
+        btn.classList.add("active");
+      } else {
+        const btns = document.querySelectorAll(".pb-lens-btn");
+        if (btns[playbackLens]) btns[playbackLens].classList.add("active");
+      }
+      applyPlaybackTransform();
+    }
+
     function toggleZoomVideo() {
       isPlaybackZoomed = !isPlaybackZoomed;
-      const v = document.getElementById("playbackVideo");
       const btn = document.getElementById("proZoomBtn");
-      if (v) v.style.transform = isPlaybackZoomed ? "scale(2)" : "scale(1)";
       if (btn) btn.classList.toggle("active", isPlaybackZoomed);
+      applyPlaybackTransform();
     }
 
     function downloadCurrentRecording() {
@@ -2105,7 +2188,7 @@
       v.addEventListener("ended", syncPlayButtons);
       v.addEventListener("timeupdate", updateTimeline);
       v.addEventListener("progress", updateTimeline);
-      v.addEventListener("loadedmetadata", () => { setPlaybackLoading(false); updateTimeline(); });
+      v.addEventListener("loadedmetadata", () => { setPlaybackLoading(false); updateTimeline(); applyPlaybackTransform(); });
       v.addEventListener("canplay", () => setPlaybackLoading(false));
       v.addEventListener("waiting", () => setPlaybackLoading(true, "Đang đệm đoạn tiếp theo..."));
       v.addEventListener("playing", () => setPlaybackLoading(false));
@@ -2148,6 +2231,7 @@
 
     function playRecording(mp4Url, hlsUrl = "", title = "") {
       initProPlayerEvents();
+      setPlaybackLens(playbackLens);
       const v = document.getElementById("playbackVideo");
       const titleEl = document.getElementById("playbackTitle");
       const badgeEl = document.getElementById("playbackModeBadge");
