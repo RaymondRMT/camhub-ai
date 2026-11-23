@@ -541,7 +541,7 @@ app = FastAPI(title="CamHub AI Pro Server", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-RECORDINGS_STREAM_CHUNK = 512 * 1024
+RECORDINGS_STREAM_CHUNK = 256 * 1024
 RECORDINGS_MAX_RANGE = 2 * 1024 * 1024
 
 
@@ -571,8 +571,7 @@ def stream_recording_range(file_path: str, request: Request):
                 if end_s:
                     end = min(file_size - 1, int(end_s))
                 else:
-                    # Giới hạn mỗi lát Range mở tối đa 2 MB để phát mượt như YouTube, không tải cả file 200 MB
-                    end = min(file_size - 1, start + RECORDINGS_MAX_RANGE - 1)
+                    end = file_size - 1
         except ValueError:
             raise HTTPException(status_code=416, detail="Range không hợp lệ")
 
