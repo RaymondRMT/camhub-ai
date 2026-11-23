@@ -648,6 +648,20 @@
           <div class="checklist-grid" id="setupChecklistGrid"></div>
         </div>
 
+                <!-- CẬP NHẬT PHIÊN BẢN MỚI TỪ XA (CHỈ ADMIN) -->
+        <div class="card admin-only" style="padding:16px; display:flex; flex-direction:column; gap:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div>
+              <h3>Cập nhật phần mềm từ xa (GitHub)</h3>
+              <p id="updateStatusText" style="font-size:0.83rem; color:var(--text-secondary);">Nhấn "Kiểm tra bản mới" để đối chiếu phiên bản trên GitHub.</p>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn sm" id="btnCheckUpdate" onclick="checkSystemUpdate()">Kiểm tra bản mới</button>
+              <button class="btn sm primary" id="btnApplyUpdate" onclick="applySystemUpdate()">Cập nhật &amp; Khởi động lại</button>
+            </div>
+          </div>
+        </div>
+
         <!-- KẾT NỐI CAMERA TỰ ĐỘNG & THỦ CÔNG -->
         <div class="card" style="padding:18px; display:flex; flex-direction:column; gap:12px;">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
@@ -1954,6 +1968,68 @@
       if (res.ok) {
         showToast(verdict === "true" ? "AI đã ghi nhận khung hình chuẩn!" : (verdict === "plate_wrong" ? "AI đã học tránh vùng bánh xe/phụ tùng khi dò biển số!" : "AI đã ghi nhớ vùng báo nhầm để lọc bỏ lần sau!"), "success");
         loadAlerts();
+      }
+    }
+
+
+    async function checkSystemUpdate() {
+      const txt = document.getElementById("updateStatusText");
+      const btn = document.getElementById("btnCheckUpdate");
+      if (btn) btn.disabled = true;
+      if (txt) txt.innerText = "Đang kiểm tra phiên bản mới từ GitHub...";
+      try {
+        const res = await authFetch("/api/admin/update/check");
+        const d = await res.json();
+        if (!res.ok) {
+          if (txt) txt.innerText = d.detail || "Không kiểm tra được bản cập nhật.";
+          return;
+        }
+        if (d.has_update) {
+          if (txt) txt.innerHTML = `<strong style="color:var(--accent);">Có bản mới (${d.remote_sha})</strong>: ${d.remote_message || "Bản cập nhật mới"} (Hiện tại: ${d.local_sha})`;
+        } else {
+          if (txt) txt.innerHTML = `Đang ở phiên bản mới nhất (<strong style="color:var(--ok);">${d.local_sha}</strong>): ${d.remote_message || ""}`;
+        }
+      } catch (e) {
+        if (txt) txt.innerText = "Lỗi kết nối khi kiểm tra cập nhật.";
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function applySystemUpdate() {
+      if (!confirm("Hệ thống sẽ tải bản mới từ GitHub và khởi động lại trạm chủ (mất khoảng 5-10 giây). Tiếp tục?")) return;
+      const txt = document.getElementById("updateStatusText");
+      const btn = document.getElementById("btnApplyUpdate");
+      if (btn) btn.disabled = true;
+      if (txt) txt.innerText = "Đang tải mã nguồn mới từ GitHub và cài thư viện...";
+      try {
+        const res = await authFetch("/api/admin/update/apply", { method: "POST" });
+        const d = await res.json();
+        if (!res.ok) {
+          if (txt) txt.innerText = d.detail || "Cập nhật thất bại.";
+          if (btn) btn.disabled = false;
+          return;
+        }
+        if (txt) txt.innerText = d.message || "Đang khởi động lại trạm chủ, vui lòng chờ...";
+        let tries = 0;
+        const waitBoot = setInterval(async () => {
+          tries += 1;
+          try {
+            const h = await fetch("/api/system/health", { cache: "no-store" });
+            if (h.ok) {
+              clearInterval(waitBoot);
+              location.reload();
+            }
+          } catch (err) {}
+          if (tries >= 25) {
+            clearInterval(waitBoot);
+            if (txt) txt.innerText = "Trạm chủ đang khởi động lại, hãy tải lại trang sau vài giây.";
+            if (btn) btn.disabled = false;
+          }
+        }, 2000);
+      } catch (e) {
+        if (txt) txt.innerText = "Lỗi kết nối khi cập nhật.";
+        if (btn) btn.disabled = false;
       }
     }
 
