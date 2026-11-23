@@ -91,6 +91,9 @@ class AIOverlayRenderer:
             "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
             "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
             "/system/fonts/Roboto-Bold.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
+            "C:/Windows/Fonts/tahomabd.ttf",
         )
         for p in candidates:
             if os.path.exists(p):
