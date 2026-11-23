@@ -80,3 +80,8 @@ camhub-ai/
 ## Giấy phép
 
 Phát hành theo giấy phép **MIT License** — xem chi tiết tại [LICENSE](./LICENSE).
+
+## Cài đặt nhanh trên máy tính Windows
+1. Tải hoặc `git clone https://github.com/RaymondRMT/camhub-ai.git`.
+2. Nhấp đúp **`setup_windows.bat`** (tự động cài Python, FFmpeg, Tesseract OCR, `cloudflared.exe`, `mediamtx.exe` và thư viện Python/MediaPipe).
+3. Nhấp đúp **`start_windows.bat`** để chạy trạm chủ tại `http://127.0.0.1:8000` (dùng **`stop_windows.bat`** để tắt).
