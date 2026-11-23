@@ -951,6 +951,7 @@ class CameraAIProcessor:
         self.frames = {}  # key: (cam_id, lens_idx) -> jpeg bytes (0 = full, 1..3 = split lens)
         self.frames_lock = threading.Lock()
         self.cam_status = {}
+        self.net_rx_bytes = 0
         self.thermal_delay = 0.20  # Mặc định ~5 FPS tiết kiệm pin & giảm nhiệt
         os.makedirs("snapshots", exist_ok=True)
         os.makedirs("models", exist_ok=True)
@@ -1460,6 +1461,7 @@ class CameraAIProcessor:
                 if not chunk:
                     break
                 last_data_ts[0] = time.time()
+                self.net_rx_bytes += len(chunk)
                 buf.extend(chunk)
                 latest_jpg = None
                 while True:
