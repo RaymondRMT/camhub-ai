@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import mimetypes
 import sys
 import re
 import hmac
@@ -538,7 +540,86 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(title="CamHub AI Pro Server", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/recordings", StaticFiles(directory="recordings"), name="recordings")
+
+RECORDINGS_STREAM_CHUNK = 512 * 1024
+RECORDINGS_MAX_RANGE = 2 * 1024 * 1024
+
+
+@app.api_route("/recordings/{file_path:path}", methods=["GET", "HEAD"])
+def stream_recording_range(file_path: str, request: Request):
+    base_dir = Path("recordings").resolve()
+    target = (base_dir / file_path).resolve()
+    if base_dir not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy tệp video")
+
+    file_size = target.stat().st_size
+    media_type = mimetypes.guess_type(str(target))[0] or "video/mp4"
+    if file_size == 0:
+        return Response(status_code=200, media_type=media_type, headers={"Accept-Ranges": "bytes", "Content-Length": "0"})
+
+    range_hdr = request.headers.get("range")
+    if range_hdr and range_hdr.startswith("bytes="):
+        spec = range_hdr.split("=", 1)[1].split(",", 1)[0].strip()
+        start_s, _, end_s = spec.partition("-")
+        try:
+            if start_s == "" and end_s:
+                suffix = int(end_s)
+                start = max(0, file_size - suffix)
+                end = file_size - 1
+            else:
+                start = int(start_s) if start_s else 0
+                if end_s:
+                    end = min(file_size - 1, int(end_s))
+                else:
+                    # Giới hạn mỗi lát Range mở tối đa 2 MB để phát mượt như YouTube, không tải cả file 200 MB
+                    end = min(file_size - 1, start + RECORDINGS_MAX_RANGE - 1)
+        except ValueError:
+            raise HTTPException(status_code=416, detail="Range không hợp lệ")
+
+        if start < 0 or start >= file_size or end < start:
+            raise HTTPException(status_code=416, detail="Range vượt quá kích thước tệp", headers={"Content-Range": f"bytes */{file_size}"})
+
+        length = end - start + 1
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Cache-Control": "no-cache",
+        }
+        if request.method == "HEAD":
+            return Response(status_code=206, media_type=media_type, headers=headers)
+
+        def _iter_range():
+            remaining = length
+            with open(target, "rb") as f:
+                f.seek(start)
+                while remaining > 0:
+                    chunk = f.read(min(RECORDINGS_STREAM_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(_iter_range(), status_code=206, media_type=media_type, headers=headers)
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_size),
+        "Cache-Control": "no-cache",
+    }
+    if request.method == "HEAD":
+        return Response(status_code=200, media_type=media_type, headers=headers)
+
+    def _iter_full():
+        with open(target, "rb") as f:
+            while True:
+                chunk = f.read(RECORDINGS_STREAM_CHUNK)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(_iter_full(), status_code=200, media_type=media_type, headers=headers)
+
 app.mount("/snapshots", StaticFiles(directory="snapshots"), name="snapshots")
 
 
