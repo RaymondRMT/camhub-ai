@@ -1725,13 +1725,23 @@ def check_github_update(admin: dict = Depends(require_admin)):
             headers={"Accept": "application/vnd.github+json", "User-Agent": "CamHub-AI-Pro"},
             timeout=6.0,
         )
-        if r.status_code != 200:
+        if r.status_code == 200:
+            data = r.json()
+            remote_sha = str(data.get("sha", ""))[:7]
+            commit = data.get("commit") or {}
+            remote_msg = str(commit.get("message", "")).splitlines()[0] if commit.get("message") else ""
+            remote_date = str(((commit.get("committer") or {}).get("date")) or "")
+        elif shutil.which("git") is not None:
+            out = subprocess.check_output(
+                ["git", "ls-remote", f"https://github.com/{GITHUB_REPO}.git", f"refs/heads/{GITHUB_BRANCH}"],
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            ).decode().strip()
+            remote_sha = out.split()[0][:7] if out else ""
+            remote_msg = "Bản mới trên GitHub"
+            remote_date = ""
+        else:
             raise HTTPException(status_code=502, detail=f"GitHub API trả về mã {r.status_code}")
-        data = r.json()
-        remote_sha = str(data.get("sha", ""))[:7]
-        commit = data.get("commit") or {}
-        remote_msg = str(commit.get("message", "")).splitlines()[0] if commit.get("message") else ""
-        remote_date = str(((commit.get("committer") or {}).get("date")) or "")
         has_update = bool(remote_sha and local["local_sha"] != remote_sha)
         return {
             **local,
