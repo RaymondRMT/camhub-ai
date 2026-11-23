@@ -233,5 +233,61 @@ class CamHubEndToEndTests(unittest.TestCase):
         self.client.post("/api/ai/overlay", json={"enabled": True}, headers=self._auth_header(self.admin_token))
 
 
+
+    def test_false_zone_allows_clear_object(self):
+        import numpy as np, cv2
+        from ai_vision import CameraAIProcessor
+
+        proc = CameraAIProcessor(lambda a: None)
+        small = np.zeros((270, 480, 3), dtype=np.uint8)
+        full = np.zeros((540, 960, 3), dtype=np.uint8)
+        # Vùng nhiễu nhỏ/mờ phải bị chặn
+        self.assertFalse(proc._is_clear_person_or_vehicle(small, (10, 10, 40, 40), full, (20, 20, 80, 80)))
+        # Vật thể lớn có đường nét rõ (xe/người) phải được cho qua
+        cv2.rectangle(small, (60, 40), (140, 160), (240, 240, 240), 3)
+        cv2.line(small, (60, 90), (140, 90), (200, 200, 200), 2)
+        cv2.circle(small, (100, 65), 14, (230, 230, 230), 2)
+        full = cv2.resize(small, (960, 540))
+        self.assertTrue(proc._is_clear_person_or_vehicle(small, (55, 35, 90, 130), full, (110, 70, 180, 260)))
+
+
+
+    def test_multi_vehicle_front_rear_classification(self):
+        import numpy as np, cv2
+        from ai_vision import CameraAIProcessor
+
+        proc = CameraAIProcessor(lambda a: None)
+        img = np.full((270, 480, 3), 120, dtype=np.uint8)
+        # Xe tải / Ô tô lớn
+        truck = proc._classify_moving_object(img, (20, 20, 220, 140))
+        self.assertEqual(truck["label"], "Xe tải")
+        car = proc._classify_moving_object(img, (20, 20, 130, 95))
+        self.assertEqual(car["label"], "Ô tô")
+        # Xe máy đi thẳng phía trước (khung dọc + đèn pha sáng)
+        img_front = img.copy()
+        cv2.circle(img_front, (100, 165), 14, (250, 250, 250), -1)
+        cv2.rectangle(img_front, (75, 140), (125, 210), (30, 30, 30), -1)
+        cv2.circle(img_front, (100, 160), 10, (255, 255, 255), -1)
+        moto_front = proc._classify_moving_object(img_front, (65, 60, 70, 160))
+        self.assertEqual(moto_front["label"], "Người đi xe")
+
+
+
+    def test_admin_remote_update_check(self):
+        from unittest.mock import patch, MagicMock
+        r_mem = self.client.get("/api/admin/update/check", headers=self._auth_header(self.member_token))
+        self.assertEqual(r_mem.status_code, 403)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "sha": "abc1234567890",
+            "commit": {"message": "Test update", "committer": {"date": "2026-11-23T03:00:00Z"}},
+        }
+        with patch("main.httpx.get", return_value=mock_resp):
+            r_adm = self.client.get("/api/admin/update/check", headers=self._auth_header(self.admin_token))
+            self.assertEqual(r_adm.status_code, 200)
+            self.assertEqual(r_adm.json()["remote_sha"], "abc1234")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
