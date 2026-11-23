@@ -258,11 +258,13 @@ class CamHubEndToEndTests(unittest.TestCase):
 
         proc = CameraAIProcessor(lambda a: None)
         img = np.full((270, 480, 3), 120, dtype=np.uint8)
-        # Xe tải / Ô tô lớn
-        truck = proc._classify_moving_object(img, (20, 20, 220, 140))
+        # Xe tải / Ô tô lớn & Người cúi (tỷ lệ ~0.85 nhưng không có dấu hiệu xe -> Người di chuyển)
+        truck = proc._classify_moving_object(img, (10, 10, 260, 180))
         self.assertEqual(truck["label"], "Xe tải")
-        car = proc._classify_moving_object(img, (20, 20, 130, 95))
+        car = proc._classify_moving_object(img, (20, 20, 200, 150))
         self.assertEqual(car["label"], "Ô tô")
+        bending_person = proc._classify_moving_object(img, (20, 20, 75, 85))
+        self.assertEqual(bending_person["label"], "Người di chuyển")
         # Xe máy đi thẳng phía trước (khung dọc + đèn pha sáng)
         img_front = img.copy()
         cv2.circle(img_front, (100, 165), 14, (250, 250, 250), -1)
@@ -287,6 +289,81 @@ class CamHubEndToEndTests(unittest.TestCase):
             r_adm = self.client.get("/api/admin/update/check", headers=self._auth_header(self.admin_token))
             self.assertEqual(r_adm.status_code, 200)
             self.assertEqual(r_adm.json()["remote_sha"], "abc1234")
+
+
+
+    def test_night_new_foreground_edges_filter(self):
+        import numpy as np, cv2
+        from ai_vision import CameraAIProcessor
+
+        base = np.full((270, 480, 3), 40, dtype=np.uint8)
+        # Bậc cửa / nền gạch cố định có sẵn đường nét
+        cv2.rectangle(base, (50, 50), (160, 180), (90, 90, 90), 2)
+        ref_gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
+
+        # Trường hợp 1: Chỉ bị đèn pha rọi sáng hơn lên chính bậc cửa cũ -> phải bị lọc bỏ
+        lit_same = np.clip(base.astype(np.int16) + 70, 0, 255).astype(np.uint8)
+        self.assertFalse(CameraAIProcessor._has_new_foreground_edges(lit_same, ref_gray, (45, 45, 125, 145)))
+
+        # Trường hợp 2: Có người/xe mới bước vào -> phải cho qua
+        with_person = base.copy()
+        cv2.circle(with_person, (105, 85), 14, (210, 210, 210), 2)
+        cv2.rectangle(with_person, (85, 100), (125, 170), (200, 200, 200), 2)
+        self.assertTrue(CameraAIProcessor._has_new_foreground_edges(with_person, ref_gray, (45, 45, 125, 145)))
+
+
+
+    def test_recordings_http_206_range_streaming(self):
+        from pathlib import Path
+        rec_dir = Path("recordings") / "test_range_cam"
+        rec_dir.mkdir(parents=True, exist_ok=True)
+        test_mp4 = rec_dir / "continuous_test.mp4"
+        payload = bytes(range(256)) * 20  # 5120 bytes
+        test_mp4.write_bytes(payload)
+        try:
+            r = self.client.get("/recordings/test_range_cam/continuous_test.mp4", headers={"Range": "bytes=100-199"})
+            self.assertEqual(r.status_code, 206)
+            self.assertEqual(r.headers.get("accept-ranges"), "bytes")
+            self.assertEqual(r.headers.get("content-range"), f"bytes 100-199/{len(payload)}")
+            self.assertEqual(r.content, payload[100:200])
+        finally:
+            test_mp4.unlink(missing_ok=True)
+            try:
+                rec_dir.rmdir()
+            except Exception:
+                pass
+
+
+
+    def test_recordings_hls_vod_streaming(self):
+        import subprocess, shutil
+        from pathlib import Path
+        if shutil.which("ffmpeg") is None:
+            return
+        rec_dir = Path("recordings") / "test_hls_cam"
+        rec_dir.mkdir(parents=True, exist_ok=True)
+        test_mp4 = rec_dir / "continuous_hls.mp4"
+        try:
+            subprocess.check_call([
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc=duration=10:size=320x180:rate=4",
+                "-c:v", "libx264", "-preset", "ultrafast", "-g", "8", "-pix_fmt", "yuv420p",
+                "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+                str(test_mp4),
+            ])
+            r_pl = self.client.get("/api/recordings/hls/test_hls_cam/continuous_hls.mp4/index.m3u8")
+            self.assertEqual(r_pl.status_code, 200)
+            self.assertIn("#EXTM3U", r_pl.text)
+            self.assertIn("seg_00000.ts", r_pl.text)
+            r_seg = self.client.get("/api/recordings/hls/test_hls_cam/continuous_hls.mp4/seg_00000.ts")
+            self.assertEqual(r_seg.status_code, 200)
+            self.assertGreater(len(r_seg.content), 1000)
+        finally:
+            test_mp4.unlink(missing_ok=True)
+            try:
+                rec_dir.rmdir()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
