@@ -1148,8 +1148,9 @@
       const next = !aiOverlayEnabled;
       updateAiOverlayBtn(next);
       try {
-        const res = await authFetch("/api/ai/overlay", {
+        const res = await apiFetch("/api/ai/overlay", {
           method: "POST",
+          headers: getAuthHeaders(),
           body: JSON.stringify({ enabled: next }),
         });
         if (res.ok) {
@@ -1978,7 +1979,7 @@
       if (btn) btn.disabled = true;
       if (txt) txt.innerText = "Đang kiểm tra phiên bản mới từ GitHub...";
       try {
-        const res = await authFetch("/api/admin/update/check");
+        const res = await apiFetch("/api/admin/update/check", { headers: getAuthHeaders() });
         const d = await res.json();
         if (!res.ok) {
           if (txt) txt.innerText = d.detail || "Không kiểm tra được bản cập nhật.";
@@ -2003,7 +2004,7 @@
       if (btn) btn.disabled = true;
       if (txt) txt.innerText = "Đang tải mã nguồn mới từ GitHub và cài thư viện...";
       try {
-        const res = await authFetch("/api/admin/update/apply", { method: "POST" });
+        const res = await apiFetch("/api/admin/update/apply", { method: "POST", headers: getAuthHeaders() });
         const d = await res.json();
         if (!res.ok) {
           if (txt) txt.innerText = d.detail || "Cập nhật thất bại.";
