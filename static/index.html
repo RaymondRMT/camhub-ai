@@ -2100,19 +2100,32 @@
 
     function applyPlaybackTransform() {
       const v = document.getElementById("playbackVideo");
-      if (!v) return;
-      const vw = v.videoWidth || 0;
-      const vh = v.videoHeight || 0;
+      const box = document.getElementById("proPlayerBox");
+      if (!v || !box) return;
+      const vw = v.videoWidth || 640;
+      const vh = v.videoHeight || 1080;
       const ratio = vw > 0 ? (vh / vw) : 1.68;
       let lensCount = 1;
       if (ratio >= 1.55) lensCount = 3;
       else if (ratio >= 1.05) lensCount = 2;
 
+      const boxW = box.clientWidth || 360;
+      const boxH = box.clientHeight || 202;
+      const fitScale = Math.min(boxW / vw, boxH / vh);
+      const renW = vw * fitScale;
+      const renH = vh * fitScale;
+
       let baseScale = 1;
       let shiftY = 0;
+      let clipStr = "none";
       if (playbackLens > 0 && lensCount > 1) {
         const idx = Math.min(playbackLens, lensCount);
-        baseScale = lensCount;
+        const lensRenW = renW;
+        const lensRenH = renH / lensCount;
+        baseScale = Math.min(boxW / Math.max(1, lensRenW), boxH / Math.max(1, lensRenH));
+        const topPct = ((idx - 1) * 100) / lensCount;
+        const botPct = ((lensCount - idx) * 100) / lensCount;
+        clipStr = `inset(${topPct.toFixed(3)}% 0% ${botPct.toFixed(3)}% 0%)`;
         if (lensCount === 3) {
           shiftY = idx === 1 ? 33.333 : (idx === 2 ? 0 : -33.333);
         } else if (lensCount === 2) {
@@ -2120,9 +2133,15 @@
         }
       }
       const totalScale = baseScale * (isPlaybackZoomed ? 2 : 1);
+      v.style.clipPath = clipStr;
+      v.style.webkitClipPath = clipStr;
       v.style.transformOrigin = "center center";
-      v.style.transform = `scale(${totalScale}) translateY(${shiftY}%)`;
+      v.style.transform = `scale(${totalScale.toFixed(4)}) translateY(${shiftY}%)`;
     }
+
+    document.addEventListener("fullscreenchange", () => setTimeout(applyPlaybackTransform, 80));
+    document.addEventListener("webkitfullscreenchange", () => setTimeout(applyPlaybackTransform, 80));
+    window.addEventListener("resize", applyPlaybackTransform);
 
     function setPlaybackLens(lensIdx, btn) {
       playbackLens = Number(lensIdx) || 0;
