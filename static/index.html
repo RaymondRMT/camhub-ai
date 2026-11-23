@@ -296,6 +296,112 @@
       .nav-item { flex-direction: column; gap: 3px; padding: 7px 5px; font-size: 0.68rem; text-align: center; }
       .grid-2x2, .grid-3x3 { grid-template-columns: 1fr !important; }
     }
+  
+    /* === PRO CUSTOM PLAYBACK PLAYER (YOUTUBE / NVR STYLE) === */
+    .pro-player {
+      position: relative; width: 100%; aspect-ratio: 16 / 9; background: #070b14;
+      border-radius: 14px; overflow: hidden; user-select: none; -webkit-user-select: none;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+    }
+    .pro-player video {
+      width: 100%; height: 100%; object-fit: contain; display: block;
+      transition: transform 0.2s ease; cursor: pointer;
+    }
+    .pro-player-top {
+      position: absolute; top: 0; left: 0; right: 0; padding: 10px 14px;
+      background: linear-gradient(to bottom, rgba(2, 6, 23, 0.82), transparent);
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+      pointer-events: none; transition: opacity 0.25s ease; z-index: 4;
+    }
+    .pro-player-title {
+      color: #f8fafc; font-size: 0.84rem; font-weight: 700;
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .pro-player-badge {
+      font-size: 0.72rem; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+      background: rgba(15, 23, 42, 0.78); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35);
+      backdrop-filter: blur(6px); white-space: nowrap;
+    }
+    .pro-spinner {
+      position: absolute; inset: 0; display: none; flex-direction: column;
+      align-items: center; justify-content: center; gap: 10px;
+      background: rgba(2, 6, 23, 0.48); z-index: 5; pointer-events: none;
+    }
+    .pro-spinner.show { display: flex; }
+    .pro-spinner-ring {
+      width: 42px; height: 42px; border-radius: 50%;
+      border: 3.5px solid rgba(255, 255, 255, 0.22); border-top-color: #38bdf8;
+      animation: proSpin 0.8s linear infinite;
+    }
+    @keyframes proSpin { to { transform: rotate(360deg); } }
+    .pro-center-play {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 60px; height: 60px; border-radius: 50%; border: none;
+      background: rgba(15, 23, 42, 0.78); color: #fff; display: flex;
+      align-items: center; justify-content: center; cursor: pointer; z-index: 4;
+      backdrop-filter: blur(8px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      transition: transform 0.16s ease, opacity 0.2s ease, background 0.16s ease;
+    }
+    .pro-center-play:hover { background: var(--accent); transform: translate(-50%, -50%) scale(1.06); }
+    .pro-player.playing .pro-center-play { opacity: 0; pointer-events: none; }
+    .pro-controls {
+      position: absolute; left: 0; right: 0; bottom: 0; padding: 24px 12px 10px;
+      background: linear-gradient(to top, rgba(2, 6, 23, 0.92) 0%, rgba(2, 6, 23, 0.55) 65%, transparent 100%);
+      display: flex; flex-direction: column; gap: 7px; z-index: 6;
+      transition: opacity 0.25s ease;
+    }
+    .pro-player.controls-hidden .pro-controls,
+    .pro-player.controls-hidden .pro-player-top { opacity: 0; pointer-events: none; }
+    .pro-timeline-wrap {
+      position: relative; width: 100%; height: 18px; display: flex; align-items: center; cursor: pointer;
+    }
+    .pro-timeline-track {
+      position: relative; width: 100%; height: 5px; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.24); overflow: visible; transition: height 0.12s ease;
+    }
+    .pro-timeline-wrap:hover .pro-timeline-track { height: 7px; }
+    .pro-timeline-buf {
+      position: absolute; top: 0; left: 0; height: 100%; width: 0%;
+      background: rgba(255, 255, 255, 0.42); border-radius: 999px;
+    }
+    .pro-timeline-prog {
+      position: absolute; top: 0; left: 0; height: 100%; width: 0%;
+      background: linear-gradient(90deg, #38bdf8, #2563eb); border-radius: 999px;
+    }
+    .pro-timeline-thumb {
+      position: absolute; top: 50%; left: 0%; width: 13px; height: 13px; border-radius: 50%;
+      background: #fff; box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.45);
+      transform: translate(-50%, -50%); pointer-events: none;
+    }
+    .pro-timeline-tip {
+      position: absolute; bottom: 20px; left: 0; transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.95); color: #f8fafc; font-size: 0.72rem; font-weight: 700;
+      padding: 3px 7px; border-radius: 6px; pointer-events: none; opacity: 0; white-space: nowrap;
+    }
+    .pro-timeline-wrap:hover .pro-timeline-tip { opacity: 1; }
+    .pro-ctrl-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: nowrap;
+    }
+    .pro-ctrl-group { display: flex; align-items: center; gap: 4px; }
+    .pro-icon-btn {
+      background: transparent; border: none; color: #f1f5f9; width: 32px; height: 32px;
+      border-radius: 8px; display: inline-flex; align-items: center; justify-content: center;
+      cursor: pointer; font-size: 0.78rem; font-weight: 700; transition: background 0.14s ease, color 0.14s ease;
+    }
+    .pro-icon-btn:hover, .pro-icon-btn.active { background: rgba(255, 255, 255, 0.16); color: #38bdf8; }
+    .pro-time-txt { color: #e2e8f0; font-size: 0.76rem; font-weight: 600; font-variant-numeric: tabular-nums; margin: 0 4px; white-space: nowrap; }
+    .pro-vol-slider { width: 58px; accent-color: #38bdf8; cursor: pointer; }
+    .pro-speed-select {
+      background: rgba(255, 255, 255, 0.14); color: #f8fafc; border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 7px; padding: 3px 6px; font-size: 0.74rem; font-weight: 700; cursor: pointer;
+    }
+    .pro-speed-select option { background: #0f172a; color: #f8fafc; }
+    .rec-item-active { background: var(--accent-soft) !important; border-color: var(--accent) !important; }
+    @media (max-width: 560px) {
+      .pro-vol-slider { display: none; }
+      .pro-icon-btn { width: 29px; height: 29px; }
+    }
+
   </style>
 </head>
 <body>
@@ -507,27 +613,63 @@
       <!-- VIEW 2: PLAYBACK -->
       <section id="view-playback" class="view-section">
         <div class="playback-layout">
-          <div class="card" style="padding:16px; display:flex; flex-direction:column; gap:12px;">
-            <div class="video-box" style="cursor:default;">
-              <video id="playbackVideo" controls playsinline></video>
-              <div class="cam-overlay-top">
-                <span class="cam-badge" id="playbackSpeedBadge">Tốc độ: 1x</span>
+          <div class="card" style="padding:14px; display:flex; flex-direction:column; gap:10px;">
+            <div class="pro-player" id="proPlayerBox" onmousemove="showProControls()" ontouchstart="showProControls()">
+              <video id="playbackVideo" playsinline preload="metadata" onclick="togglePlaybackPlay()"></video>
+              <div class="pro-player-top">
+                <span class="pro-player-title" id="playbackTitle">Chọn bản ghi để phát</span>
+                <span class="pro-player-badge" id="playbackModeBadge">HLS • Tải theo đoạn</span>
               </div>
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-              <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                <button class="btn sm" onclick="skipSeconds(-10)">-10s</button>
-                <button class="btn sm" onclick="skipSeconds(10)">+10s</button>
-                <button class="btn sm speed-btn" onclick="setSpeed(0.5, this)">0.5x</button>
-                <button class="btn sm speed-btn active" onclick="setSpeed(1, this)">1x</button>
-                <button class="btn sm speed-btn" onclick="setSpeed(2, this)">2x</button>
-                <button class="btn sm speed-btn" onclick="setSpeed(4, this)">4x</button>
-                <button class="btn sm speed-btn" onclick="setSpeed(8, this)">8x</button>
-                <button class="btn sm speed-btn" onclick="setSpeed(16, this)">16x</button>
+              <div class="pro-spinner" id="playbackSpinner">
+                <div class="pro-spinner-ring"></div>
+                <span style="color:#f8fafc; font-size:0.8rem; font-weight:600;" id="playbackSpinnerText">Đang nạp đoạn video...</span>
               </div>
-              <div style="display:flex; gap:8px;">
-                <button class="btn sm" onclick="toggleZoomVideo()">Zoom 2x</button>
-                <button class="btn sm primary" onclick="capturePlaybackSnapshot()">Chụp ảnh</button>
+              <button class="pro-center-play" id="proCenterPlayBtn" onclick="togglePlaybackPlay()" aria-label="Phát hoặc tạm dừng">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"></polygon></svg>
+              </button>
+              <div class="pro-controls" onclick="event.stopPropagation()">
+                <div class="pro-timeline-wrap" id="proTimelineWrap">
+                  <div class="pro-timeline-tip" id="proTimelineTip">00:00</div>
+                  <div class="pro-timeline-track">
+                    <div class="pro-timeline-buf" id="proTimelineBuf"></div>
+                    <div class="pro-timeline-prog" id="proTimelineProg"></div>
+                    <div class="pro-timeline-thumb" id="proTimelineThumb"></div>
+                  </div>
+                </div>
+                <div class="pro-ctrl-row">
+                  <div class="pro-ctrl-group">
+                    <button class="pro-icon-btn" id="proPlayBtn" onclick="togglePlaybackPlay()" title="Phát / Tạm dừng">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"></polygon></svg>
+                    </button>
+                    <button class="pro-icon-btn" onclick="skipSeconds(-10)" title="Lùi 10 giây">-10s</button>
+                    <button class="pro-icon-btn" onclick="skipSeconds(10)" title="Tới 10 giây">+10s</button>
+                    <button class="pro-icon-btn" id="proMuteBtn" onclick="togglePlaybackMute()" title="Bật / Tắt tiếng">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                    </button>
+                    <input type="range" min="0" max="1" step="0.05" value="1" class="pro-vol-slider" id="proVolSlider" oninput="setPlaybackVolume(this.value)" aria-label="Âm lượng">
+                    <span class="pro-time-txt" id="proTimeTxt">00:00 / 00:00</span>
+                  </div>
+                  <div class="pro-ctrl-group">
+                    <select class="pro-speed-select" id="proSpeedSelect" onchange="setSpeedValue(this.value)" title="Tốc độ phát">
+                      <option value="0.5">0.5x</option>
+                      <option value="1" selected>1x</option>
+                      <option value="2">2x</option>
+                      <option value="4">4x</option>
+                      <option value="8">8x</option>
+                      <option value="16">16x</option>
+                    </select>
+                    <button class="pro-icon-btn" id="proZoomBtn" onclick="toggleZoomVideo()" title="Phóng to 2x">2x</button>
+                    <button class="pro-icon-btn" onclick="capturePlaybackSnapshot()" title="Chụp khung hình">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                    </button>
+                    <button class="pro-icon-btn" onclick="downloadCurrentRecording()" title="Tải video MP4">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    </button>
+                    <button class="pro-icon-btn" onclick="togglePlaybackFullscreen()" title="Toàn màn hình">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1813,8 +1955,11 @@
       };
       document.getElementById("recordingList").innerHTML = filtered.map(r => {
         const c = colors[r.category] || colors.continuous;
+        const isAct = currentPlaybackUrl === r.url ? " rec-item-active" : "";
+        const hlsArg = escapeHtml(r.hls_url || "");
+        const titleArg = escapeHtml(`${r.label || "Video"} • ${r.created_at}`);
         return `
-        <button class="btn sm" style="justify-content:space-between; width:100%; border-left:4px solid ${c.border}; padding:9px 11px;" onclick="playRecording('${escapeHtml(r.url)}')">
+        <button class="btn sm${isAct}" style="justify-content:space-between; width:100%; border-left:4px solid ${c.border}; padding:9px 11px;" onclick="playRecording('${escapeHtml(r.url)}', '${hlsArg}', '${titleArg}')">
           <span style="display:flex; flex-direction:column; align-items:flex-start; gap:2px;">
             <span style="font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:999px; background:${c.bg}; color:${c.text};">${escapeHtml(r.label || "Video")}</span>
             <span>${escapeHtml(r.created_at)}</span>
@@ -1822,6 +1967,175 @@
           <span style="color:var(--text-muted);">${Number(r.size_mb)} MB</span>
         </button>`;
       }).join("") || `<p style="font-size:0.84rem; color:var(--text-muted);">Chưa có video ghi hình trong mục này.</p>`;
+    }
+
+    let playbackHls = null;
+    let currentPlaybackUrl = "";
+    let proControlsTimer = null;
+    let isScrubbingTimeline = false;
+
+    function fmtClock(sec) {
+      if (!isFinite(sec) || sec < 0) return "00:00";
+      const s = Math.floor(sec);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const r = s % 60;
+      const pad = n => String(n).padStart(2, "0");
+      return h > 0 ? `${h}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
+    }
+
+    function setPlaybackLoading(show, text = "Đang nạp đoạn video...") {
+      const sp = document.getElementById("playbackSpinner");
+      const st = document.getElementById("playbackSpinnerText");
+      if (st) st.innerText = text;
+      if (sp) sp.classList.toggle("show", !!show);
+    }
+
+    function showProControls() {
+      const box = document.getElementById("proPlayerBox");
+      const v = document.getElementById("playbackVideo");
+      if (!box) return;
+      box.classList.remove("controls-hidden");
+      if (proControlsTimer) clearTimeout(proControlsTimer);
+      if (v && !v.paused) {
+        proControlsTimer = setTimeout(() => {
+          if (!isScrubbingTimeline && !v.paused) box.classList.add("controls-hidden");
+        }, 3200);
+      }
+    }
+
+    function syncPlayButtons() {
+      const v = document.getElementById("playbackVideo");
+      const box = document.getElementById("proPlayerBox");
+      const btn = document.getElementById("proPlayBtn");
+      if (!v || !box || !btn) return;
+      const playing = !v.paused && !v.ended;
+      box.classList.toggle("playing", playing);
+      btn.innerHTML = playing
+        ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>'
+        : '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"></polygon></svg>';
+      showProControls();
+    }
+
+    function togglePlaybackPlay() {
+      const v = document.getElementById("playbackVideo");
+      if (!v || (!v.src && !playbackHls)) return;
+      if (v.paused) v.play().catch(() => {});
+      else v.pause();
+    }
+
+    function togglePlaybackMute() {
+      const v = document.getElementById("playbackVideo");
+      const sl = document.getElementById("proVolSlider");
+      const btn = document.getElementById("proMuteBtn");
+      if (!v) return;
+      v.muted = !v.muted;
+      if (sl) sl.value = v.muted ? 0 : v.volume;
+      if (btn) btn.classList.toggle("active", v.muted);
+    }
+
+    function setPlaybackVolume(val) {
+      const v = document.getElementById("playbackVideo");
+      if (!v) return;
+      v.volume = Math.max(0, Math.min(1, Number(val)));
+      v.muted = v.volume === 0;
+    }
+
+    function setSpeedValue(rate) {
+      const v = document.getElementById("playbackVideo");
+      if (v) v.playbackRate = Number(rate) || 1;
+    }
+
+    function skipSeconds(sec) {
+      const v = document.getElementById("playbackVideo");
+      if (!v || !isFinite(v.duration)) return;
+      v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + sec));
+      showProControls();
+    }
+
+    function toggleZoomVideo() {
+      isPlaybackZoomed = !isPlaybackZoomed;
+      const v = document.getElementById("playbackVideo");
+      const btn = document.getElementById("proZoomBtn");
+      if (v) v.style.transform = isPlaybackZoomed ? "scale(2)" : "scale(1)";
+      if (btn) btn.classList.toggle("active", isPlaybackZoomed);
+    }
+
+    function downloadCurrentRecording() {
+      if (!currentPlaybackUrl) return;
+      const a = document.createElement("a");
+      a.href = currentPlaybackUrl;
+      a.download = currentPlaybackUrl.split("/").pop() || "CamHub_Video.mp4";
+      a.click();
+    }
+
+    function togglePlaybackFullscreen() {
+      const box = document.getElementById("proPlayerBox");
+      if (!box) return;
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      else if (box.requestFullscreen) box.requestFullscreen().catch(() => {});
+      else if (box.webkitRequestFullscreen) box.webkitRequestFullscreen();
+    }
+
+    function initProPlayerEvents() {
+      const v = document.getElementById("playbackVideo");
+      const wrap = document.getElementById("proTimelineWrap");
+      if (!v || !wrap || v.dataset.proBound) return;
+      v.dataset.proBound = "1";
+
+      const updateTimeline = () => {
+        const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+        const cur = v.currentTime || 0;
+        const pct = dur ? Math.min(100, (cur / dur) * 100) : 0;
+        const prog = document.getElementById("proTimelineProg");
+        const thumb = document.getElementById("proTimelineThumb");
+        const txt = document.getElementById("proTimeTxt");
+        if (prog) prog.style.width = pct + "%";
+        if (thumb) thumb.style.left = pct + "%";
+        if (txt) txt.innerText = `${fmtClock(cur)} / ${fmtClock(dur)}`;
+        if (dur && v.buffered && v.buffered.length > 0) {
+          const end = v.buffered.end(v.buffered.length - 1);
+          const bufEl = document.getElementById("proTimelineBuf");
+          if (bufEl) bufEl.style.width = Math.min(100, (end / dur) * 100) + "%";
+        }
+      };
+
+      v.addEventListener("play", syncPlayButtons);
+      v.addEventListener("pause", syncPlayButtons);
+      v.addEventListener("ended", syncPlayButtons);
+      v.addEventListener("timeupdate", updateTimeline);
+      v.addEventListener("progress", updateTimeline);
+      v.addEventListener("loadedmetadata", () => { setPlaybackLoading(false); updateTimeline(); });
+      v.addEventListener("canplay", () => setPlaybackLoading(false));
+      v.addEventListener("waiting", () => setPlaybackLoading(true, "Đang đệm đoạn tiếp theo..."));
+      v.addEventListener("playing", () => setPlaybackLoading(false));
+
+      const seekAtClientX = (clientX, commit = true) => {
+        const rect = wrap.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+        const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+        const tip = document.getElementById("proTimelineTip");
+        if (tip) {
+          tip.style.left = (ratio * 100) + "%";
+          tip.innerText = fmtClock(ratio * dur);
+        }
+        if (commit && dur > 0) {
+          v.currentTime = ratio * dur;
+          updateTimeline();
+        }
+      };
+
+      wrap.addEventListener("mousemove", e => seekAtClientX(e.clientX, isScrubbingTimeline));
+      wrap.addEventListener("mousedown", e => { isScrubbingTimeline = true; seekAtClientX(e.clientX, true); });
+      window.addEventListener("mouseup", () => { isScrubbingTimeline = false; });
+      wrap.addEventListener("touchstart", e => {
+        isScrubbingTimeline = true;
+        if (e.touches[0]) seekAtClientX(e.touches[0].clientX, true);
+      }, { passive: true });
+      wrap.addEventListener("touchmove", e => {
+        if (isScrubbingTimeline && e.touches[0]) seekAtClientX(e.touches[0].clientX, true);
+      }, { passive: true });
+      wrap.addEventListener("touchend", () => { isScrubbingTimeline = false; });
     }
 
     async function loadRecordings() {
@@ -1832,15 +2146,63 @@
       renderRecordings();
     }
 
-    function playRecording(url) { const v = document.getElementById("playbackVideo"); v.src = url; v.play().catch(() => {}); }
-    function setSpeed(rate, btn) {
-      document.getElementById("playbackVideo").playbackRate = rate;
-      document.getElementById("playbackSpeedBadge").innerText = `Tốc độ: ${rate}x`;
-      document.querySelectorAll(".speed-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
+    function playRecording(mp4Url, hlsUrl = "", title = "") {
+      initProPlayerEvents();
+      const v = document.getElementById("playbackVideo");
+      const titleEl = document.getElementById("playbackTitle");
+      const badgeEl = document.getElementById("playbackModeBadge");
+      const speedSel = document.getElementById("proSpeedSelect");
+      currentPlaybackUrl = mp4Url;
+      renderRecordings();
+
+      if (playbackHls) {
+        try { playbackHls.destroy(); } catch (e) {}
+        playbackHls = null;
+      }
+      v.pause();
+      v.removeAttribute("src");
+      v.load();
+      if (titleEl) titleEl.innerText = title || mp4Url.split("/").pop();
+      setPlaybackLoading(true, "Đang chia đoạn HLS & phát ngay...");
+      showProControls();
+
+      const fallbackMp4 = () => {
+        if (badgeEl) badgeEl.innerText = "MP4 Trực tiếp";
+        v.src = mp4Url;
+        v.playbackRate = Number(speedSel ? speedSel.value : 1) || 1;
+        v.play().catch(() => {});
+      };
+
+      if (hlsUrl && window.Hls && Hls.isSupported()) {
+        if (badgeEl) badgeEl.innerText = "HLS • Tải theo đoạn";
+        playbackHls = new Hls({
+          maxBufferLength: 18,
+          maxMaxBufferLength: 36,
+          startLevel: -1,
+          enableWorker: true,
+        });
+        playbackHls.loadSource(hlsUrl);
+        playbackHls.attachMedia(v);
+        playbackHls.on(Hls.Events.MANIFEST_PARSED, () => {
+          v.playbackRate = Number(speedSel ? speedSel.value : 1) || 1;
+          v.play().catch(() => {});
+        });
+        playbackHls.on(Hls.Events.ERROR, (ev, data) => {
+          if (data && data.fatal) {
+            try { playbackHls.destroy(); } catch (e) {}
+            playbackHls = null;
+            fallbackMp4();
+          }
+        });
+      } else if (hlsUrl && v.canPlayType("application/vnd.apple.mpegurl")) {
+        if (badgeEl) badgeEl.innerText = "HLS • Tải theo đoạn";
+        v.src = hlsUrl;
+        v.playbackRate = Number(speedSel ? speedSel.value : 1) || 1;
+        v.play().catch(() => {});
+      } else {
+        fallbackMp4();
+      }
     }
-    function skipSeconds(sec) { const v = document.getElementById("playbackVideo"); v.currentTime = Math.max(0, v.currentTime + sec); }
-    function toggleZoomVideo() { isPlaybackZoomed = !isPlaybackZoomed; document.getElementById("playbackVideo").style.transform = isPlaybackZoomed ? "scale(2)" : "scale(1)"; }
     function capturePlaybackSnapshot() {
       const v = document.getElementById("playbackVideo");
       const c = document.createElement("canvas");
