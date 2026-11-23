@@ -76,6 +76,8 @@ class AIOverlayRenderer:
         "Người té ngã": "Nguoi te nga",
         "Người đi xe": "Nguoi di xe",
         "Xe": "Xe",
+        "Ô tô": "O to",
+        "Xe tải": "Xe tai",
         "Người di chuyển": "Nguoi di chuyen",
     }
 
@@ -527,11 +529,15 @@ class FaceAndPlateEnhancer:
             if roi.size == 0 or self._is_green_foliage(roi) or self._is_red_object(roi):
                 continue
             hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            # Biển số trắng/bạc hoặc vàng có độ sáng cao & tương phản chữ đen rõ
+            # Biển số trắng/bạc hoặc vàng có độ sáng cao & tương phản chữ đen rõ (loại trừ chóa đèn pha trắng loá)
             bright_neutral = cv2.inRange(hsv_roi, (0, 0, 125), (180, 75, 255))
             bright_yellow = cv2.inRange(hsv_roi, (15, 70, 115), (38, 255, 255))
             plate_bg_ratio = (cv2.countNonZero(bright_neutral) + cv2.countNonZero(bright_yellow)) / float(area)
-            contrast = float(np.std(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)))
+            roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            contrast = float(np.std(roi_gray))
+            overexposed = cv2.countNonZero(cv2.inRange(roi_gray, 242, 255)) / float(area)
+            if overexposed > 0.55 and contrast < 48.0:
+                continue
             rel_box = (cx / float(vw), cy / float(vh), cw / float(vw), ch / float(vh))
             if learner is not None and learner.is_plate_bad_zone(cam_id, lens_idx, rel_box):
                 continue
@@ -1304,6 +1310,79 @@ class CameraAIProcessor:
                 except Exception:
                     pass
 
+    def _classify_moving_object(self, img: np.ndarray, box: tuple, is_fall: bool = False) -> dict:
+        """Phân loại Người di chuyển, Người đi xe (phía trước/phía sau), Ô tô (2-7 chỗ), Xe tải."""
+        bx, by, bw, bh = box
+        ih, iw = img.shape[:2]
+        if is_fall:
+            return {"box": box, "kind": "fall", "label": "Người té ngã", "direction": ""}
+
+        ratio = bw / float(max(1, bh))
+        area_ratio = (bw * bh) / float(max(1, iw * ih))
+
+        # 1) Xe tải / Ô tô (2 chỗ, 4 chỗ, 7 chỗ) dựa trên kích thước khối & tỷ lệ thân xe
+        if area_ratio >= 0.18 or (bh >= int(ih * 0.44) and bw >= int(iw * 0.30)):
+            return {"box": box, "kind": "vehicle", "label": "Xe tải", "direction": ""}
+        if area_ratio >= 0.085 and (ratio >= 0.90 or bw >= int(iw * 0.24)):
+            return {"box": box, "kind": "vehicle", "label": "Ô tô", "direction": ""}
+
+        # 2) Kiểm tra dấu hiệu phía trước xe (đèn pha) và phía sau xe (đèn hậu đỏ / biển số)
+        roi = img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
+        has_plate = False
+        has_headlight = False
+        has_taillight = False
+        if roi.size > 0 and (bw * bh) >= 3200:
+            rh, rw = roi.shape[:2]
+            lower = roi[int(rh * 0.42) : rh, :]
+            if lower.size > 0:
+                has_taillight = self.enhancer._is_red_object(lower)
+                gray_low = cv2.cvtColor(lower, cv2.COLOR_BGR2GRAY)
+                bright_ratio = cv2.countNonZero(cv2.inRange(gray_low, 215, 255)) / float(max(1, lower.shape[0] * lower.shape[1]))
+                # Cụm đèn pha sáng tập trung ở nửa dưới mặt trước xe máy
+                has_headlight = (bright_ratio >= 0.035) and (not has_taillight)
+            # Nửa dưới có bánh/yếm xe rộng & tối (đặc trưng xe máy nhìn thẳng từ trước hoặc sau)
+            mid_lower = roi[int(rh * 0.48) : int(rh * 0.92), int(rw * 0.15) : int(rw * 0.85)]
+            has_bike_body = False
+            if mid_lower.size > 0:
+                g_ml = cv2.cvtColor(mid_lower, cv2.COLOR_BGR2GRAY)
+                dark_mass = cv2.countNonZero(cv2.inRange(g_ml, 0, 85)) / float(max(1, g_ml.shape[0] * g_ml.shape[1]))
+                has_bike_body = (dark_mass >= 0.36) and (bw >= 52) and (bh >= 80)
+
+            pad_x, pad_y = int(bw * 0.12), int(bh * 0.12)
+            vx1, vy1 = max(0, bx - pad_x), max(0, by - pad_y)
+            vx2, vy2 = min(iw, bx + bw + pad_x), min(ih, by + bh + pad_y)
+            has_plate = self.enhancer._find_plate_in_vehicle(img[vy1:vy2, vx1:vx2]) is not None
+
+            if ratio >= 0.72 or has_plate or has_taillight or has_headlight or has_bike_body:
+                if ratio > 1.55:
+                    return {"box": box, "kind": "vehicle", "label": "Xe", "direction": "ngang"}
+                direction = "sau" if (has_plate or has_taillight) else ("truoc" if has_headlight else "")
+                return {"box": box, "kind": "rider", "label": "Người đi xe", "direction": direction}
+
+        if ratio >= 0.72:
+            if ratio > 1.55:
+                return {"box": box, "kind": "vehicle", "label": "Xe", "direction": "ngang"}
+            return {"box": box, "kind": "rider", "label": "Người đi xe", "direction": ""}
+
+        return {"box": box, "kind": "person", "label": "Người di chuyển", "direction": ""}
+
+    def _classify_boxes_for_overlay(self, img: np.ndarray, boxes: list, is_horizontal: bool = False) -> list:
+        if img is None or img.size == 0 or not boxes:
+            return []
+        ih, iw = img.shape[:2]
+        detections = []
+        sorted_boxes = sorted(boxes, key=lambda b: b[2] * b[3], reverse=True)[:5]
+        for idx_b, (bx, by, bw, bh) in enumerate(sorted_boxes):
+            if bw < 26 or bh < 26 or (bw * bh) < 1200:
+                continue
+            if by < int(ih * 0.08) and bh < int(ih * 0.16):
+                continue
+            roi_chk = img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
+            if self.enhancer._is_green_foliage(roi_chk):
+                continue
+            detections.append(self._classify_moving_object(img, (bx, by, bw, bh), is_fall=(is_horizontal and idx_b == 0)))
+        return detections
+
     def _run_ai_on_lens(
         self,
         cam_id: str,
@@ -1420,10 +1499,9 @@ class CameraAIProcessor:
                 )
                 overview_jpg = best["jpg"]
                 if self.ai_overlay_enabled:
-                    with self.frames_lock:
-                        ov = self.overlay_cache.get((cam_id, lens_idx))
-                    if ov and (now - ov["ts"]) <= 4.5:
-                        ann = self.overlay_renderer.render(best["img"], ov["detections"], ov["skeleton"])
+                    best_dets = self._classify_boxes_for_overlay(best["img"], best["boxes"], is_horizontal=False)
+                    if best_dets:
+                        ann = self.overlay_renderer.render(best["img"], best_dets, None)
                         ok_ov, buf_ov = cv2.imencode(".jpg", ann, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
                         if ok_ov:
                             overview_jpg = buf_ov.tobytes()
