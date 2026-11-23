@@ -594,10 +594,8 @@ class FaceAndPlateEnhancer:
             min_b = learner.get_plate_min_bright(cam_id, lens_idx) if learner is not None else 0.34
             plate_box = self._find_plate_in_vehicle(veh_crop, min_bright=min_b, cam_id=cam_id, lens_idx=lens_idx, learner=learner) if (veh_crop.size > 0 and area >= 3600) else None
 
-            # Phân loại kết hợp:
-            # - Người đi bộ đứng thẳng: ratio < 0.72 và không có biển số -> chỉ cắt người (từ vai lên)
-            # - Người đang chạy xe (hoặc xe máy/ô tô): ratio >= 0.72 HOẶC phát hiện biển số -> cắt CẢ người (từ vai lên) LẪN xe + biển số!
-            is_rider_or_vehicle = (ratio >= 0.72) or (plate_box is not None)
+            # Phân loại kết hợp chặt chẽ hơn: chỉ cắt Xe + Biển số khi thực sự là phương tiện (tránh người cúi bị cắt nhầm biển số)
+            is_rider_or_vehicle = (ratio >= 1.15) or (plate_box is not None)
             has_person_top = (ratio <= 1.55) or (plate_box is not None and bh >= 65)
 
             if has_person_top and person_count < 2:
@@ -1345,7 +1343,7 @@ class CameraAIProcessor:
                     pass
 
     def _classify_moving_object(self, img: np.ndarray, box: tuple, is_fall: bool = False) -> dict:
-        """Phân loại Người di chuyển, Người đi xe (phía trước/phía sau), Ô tô (2-7 chỗ), Xe tải."""
+        """Phân loại chặt chẽ: Người di chuyển (kể cả cúi/vung tay), Người đi xe (trước/sau/ngang), Ô tô, Xe tải."""
         bx, by, bw, bh = box
         ih, iw = img.shape[:2]
         if is_fall:
@@ -1354,49 +1352,43 @@ class CameraAIProcessor:
         ratio = bw / float(max(1, bh))
         area_ratio = (bw * bh) / float(max(1, iw * ih))
 
-        # 1) Xe tải / Ô tô (2 chỗ, 4 chỗ, 7 chỗ) dựa trên kích thước khối & tỷ lệ thân xe
-        if area_ratio >= 0.18 or (bh >= int(ih * 0.44) and bw >= int(iw * 0.30)):
+        # 1) Xe tải / Ô tô: yêu cầu khối đặc lớn & bề ngang rõ rệt (tránh xe máy + quầng đèn bị nhầm thành Ô tô)
+        if area_ratio >= 0.34 and bw >= int(iw * 0.45) and bh >= int(ih * 0.48):
             return {"box": box, "kind": "vehicle", "label": "Xe tải", "direction": ""}
-        if area_ratio >= 0.085 and (ratio >= 0.90 or bw >= int(iw * 0.24)):
+        if area_ratio >= 0.21 and bw >= int(iw * 0.34) and ratio >= 1.12:
             return {"box": box, "kind": "vehicle", "label": "Ô tô", "direction": ""}
 
-        # 2) Kiểm tra dấu hiệu phía trước xe (đèn pha) và phía sau xe (đèn hậu đỏ / biển số)
+        # 2) Kiểm tra dấu hiệu phương tiện thực sự (đèn pha, đèn hậu đỏ, biển số, khối bánh/yếm xe)
         roi = img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
         has_plate = False
         has_headlight = False
         has_taillight = False
+        has_bike_body = False
         if roi.size > 0 and (bw * bh) >= 3200:
             rh, rw = roi.shape[:2]
             lower = roi[int(rh * 0.42) : rh, :]
             if lower.size > 0:
                 has_taillight = self.enhancer._is_red_object(lower)
                 gray_low = cv2.cvtColor(lower, cv2.COLOR_BGR2GRAY)
-                bright_ratio = cv2.countNonZero(cv2.inRange(gray_low, 215, 255)) / float(max(1, lower.shape[0] * lower.shape[1]))
-                # Cụm đèn pha sáng tập trung ở nửa dưới mặt trước xe máy
-                has_headlight = (bright_ratio >= 0.035) and (not has_taillight)
-            # Nửa dưới có bánh/yếm xe rộng & tối (đặc trưng xe máy nhìn thẳng từ trước hoặc sau)
-            mid_lower = roi[int(rh * 0.48) : int(rh * 0.92), int(rw * 0.15) : int(rw * 0.85)]
-            has_bike_body = False
+                bright_ratio = cv2.countNonZero(cv2.inRange(gray_low, 220, 255)) / float(max(1, lower.shape[0] * lower.shape[1]))
+                has_headlight = (bright_ratio >= 0.04) and (not has_taillight)
+            mid_lower = roi[int(rh * 0.50) : int(rh * 0.92), int(rw * 0.15) : int(rw * 0.85)]
             if mid_lower.size > 0:
                 g_ml = cv2.cvtColor(mid_lower, cv2.COLOR_BGR2GRAY)
-                dark_mass = cv2.countNonZero(cv2.inRange(g_ml, 0, 85)) / float(max(1, g_ml.shape[0] * g_ml.shape[1]))
-                has_bike_body = (dark_mass >= 0.36) and (bw >= 52) and (bh >= 80)
+                dark_mass = cv2.countNonZero(cv2.inRange(g_ml, 0, 80)) / float(max(1, g_ml.shape[0] * g_ml.shape[1]))
+                has_bike_body = (dark_mass >= 0.40) and (bw >= 56) and (bh >= 84)
 
             pad_x, pad_y = int(bw * 0.12), int(bh * 0.12)
             vx1, vy1 = max(0, bx - pad_x), max(0, by - pad_y)
             vx2, vy2 = min(iw, bx + bw + pad_x), min(ih, by + bh + pad_y)
             has_plate = self.enhancer._find_plate_in_vehicle(img[vy1:vy2, vx1:vx2]) is not None
 
-            if ratio >= 0.72 or has_plate or has_taillight or has_headlight or has_bike_body:
-                if ratio > 1.55:
-                    return {"box": box, "kind": "vehicle", "label": "Xe", "direction": "ngang"}
-                direction = "sau" if (has_plate or has_taillight) else ("truoc" if has_headlight else "")
-                return {"box": box, "kind": "rider", "label": "Người đi xe", "direction": direction}
-
-        if ratio >= 0.72:
-            if ratio > 1.55:
+        has_vehicle_cue = has_plate or has_taillight or has_headlight or has_bike_body
+        if has_vehicle_cue or ratio >= 1.25:
+            if ratio > 1.65 and not has_headlight:
                 return {"box": box, "kind": "vehicle", "label": "Xe", "direction": "ngang"}
-            return {"box": box, "kind": "rider", "label": "Người đi xe", "direction": ""}
+            direction = "sau" if (has_plate or has_taillight) else ("truoc" if has_headlight else "")
+            return {"box": box, "kind": "rider", "label": "Người đi xe", "direction": direction}
 
         return {"box": box, "kind": "person", "label": "Người di chuyển", "direction": ""}
 
