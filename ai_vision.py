@@ -41,6 +41,117 @@ POSE_TASK_URL = (
 )
 POSE_TASK_PATH = os.path.join("models", "pose_landmarker_lite.task")
 
+YOLO_ONNX_URL = (
+    "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
+)
+YOLO_ONNX_PATH = os.path.join("models", "yolov5n.onnx")
+
+
+class SmartObjectDNN:
+    """Bộ nhận diện Deep Learning nhẹ (YOLOv5n ONNX qua cv2.dnn): Người, Xe máy, Ô tô, Xe tải."""
+
+    # COCO class IDs quan tâm: 0=person, 1=bicycle, 2=car, 3=motorcycle, 5=bus, 7=truck
+    TARGET_CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+
+    def __init__(self, model_path: str = YOLO_ONNX_PATH):
+        self.model_path = model_path
+        self.net = None
+        self.lock = threading.Lock()
+        self.input_size = 416
+        self._try_load()
+
+    def _try_load(self) -> bool:
+        if self.net is not None:
+            return True
+        if not os.path.exists(self.model_path) or os.path.getsize(self.model_path) < 100000:
+            return False
+        try:
+            net = cv2.dnn.readNetFromONNX(self.model_path)
+            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+            with self.lock:
+                self.net = net
+            return True
+        except Exception:
+            return False
+
+    @property
+    def is_ready(self) -> bool:
+        return self.net is not None or self._try_load()
+
+    def detect(self, bgr_img: np.ndarray, conf_thresh: float = 0.32, nms_thresh: float = 0.45) -> list:
+        if not self.is_ready or bgr_img is None or bgr_img.size == 0:
+            return []
+        ih, iw = bgr_img.shape[:2]
+        sz = self.input_size
+        # Letterbox vuông để không méo tỷ lệ người/xe
+        scale = min(sz / float(max(1, iw)), sz / float(max(1, ih)))
+        nw, nh = max(1, int(round(iw * scale))), max(1, int(round(ih * scale)))
+        resized = cv2.resize(bgr_img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        canvas = np.full((sz, sz, 3), 114, dtype=np.uint8)
+        pad_x = (sz - nw) // 2
+        pad_y = (sz - nh) // 2
+        canvas[pad_y : pad_y + nh, pad_x : pad_x + nw] = resized
+
+        blob = cv2.dnn.blobFromImage(canvas, 1.0 / 255.0, (sz, sz), swapRB=True, crop=False)
+        try:
+            with self.lock:
+                self.net.setInput(blob)
+                preds = self.net.forward()
+        except Exception:
+            return []
+
+        if preds is None or preds.size == 0:
+            return []
+        arr = preds[0] if preds.ndim == 3 else preds
+        if arr.ndim != 2 or arr.shape[1] < 13:
+            return []
+
+        obj_conf = arr[:, 4]
+        mask = obj_conf >= conf_thresh
+        arr = arr[mask]
+        if arr.shape[0] == 0:
+            return []
+
+        cls_scores = arr[:, 5:]
+        cls_ids = np.argmax(cls_scores, axis=1)
+        cls_confs = cls_scores[np.arange(arr.shape[0]), cls_ids]
+        scores = arr[:, 4] * cls_confs
+
+        boxes = []
+        confs = []
+        labels = []
+        for i in range(arr.shape[0]):
+            cid = int(cls_ids[i])
+            sc = float(scores[i])
+            if cid not in self.TARGET_CLASSES or sc < conf_thresh:
+                continue
+            cx, cy, bw, bh = float(arr[i, 0]), float(arr[i, 1]), float(arr[i, 2]), float(arr[i, 3])
+            x1 = int(round(((cx - bw / 2.0) - pad_x) / scale))
+            y1 = int(round(((cy - bh / 2.0) - pad_y) / scale))
+            x2 = int(round(((cx + bw / 2.0) - pad_x) / scale))
+            y2 = int(round(((cy + bh / 2.0) - pad_y) / scale))
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(iw, x2), min(ih, y2)
+            if x2 - x1 >= 18 and y2 - y1 >= 18:
+                boxes.append([x1, y1, x2 - x1, y2 - y1])
+                confs.append(sc)
+                labels.append(self.TARGET_CLASSES[cid])
+
+        if not boxes:
+            return []
+        idxs = cv2.dnn.NMSBoxes(boxes, confs, conf_thresh, nms_thresh)
+        results = []
+        if len(idxs) > 0:
+            for idx in np.array(idxs).flatten():
+                results.append({
+                    "cls": labels[idx],
+                    "conf": round(confs[idx], 3),
+                    "box": tuple(boxes[idx]),
+                })
+        return results
+
+
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
 
 
@@ -79,6 +190,11 @@ class AIOverlayRenderer:
         "Ô tô": "O to",
         "Xe tải": "Xe tai",
         "Người di chuyển": "Nguoi di chuyen",
+        "Người đi xe (Đầu xe)": "Nguoi di xe (Dau xe)",
+        "Người đi xe (Đuôi xe)": "Nguoi di xe (Duoi xe)",
+        "Ô tô (Đầu xe)": "O to (Dau xe)",
+        "Ô tô (Đuôi xe)": "O to (Duoi xe)",
+        "Biển số": "Bien so",
     }
 
     def __init__(self):
@@ -113,9 +229,10 @@ class AIOverlayRenderer:
         return self._fonts[size]
 
     @staticmethod
-    def _draw_corner_box(img: np.ndarray, x1: int, y1: int, x2: int, y2: int, color: tuple, thickness: int = 2):
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
-        cl = max(8, min(22, (x2 - x1) // 4, (y2 - y1) // 4))
+    def _draw_corner_box(img: np.ndarray, x1: int, y1: int, x2: int, y2: int, color: tuple, thickness: int = 3):
+        # Khung phân vùng chính dày hơn +1px (2px thân khung + 4-5px góc) tập trung rõ vật thể
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
+        cl = max(10, min(26, (x2 - x1) // 4, (y2 - y1) // 4))
         for (px, py, dx, dy) in (
             (x1, y1, 1, 1), (x2, y1, -1, 1),
             (x1, y2, 1, -1), (x2, y2, -1, -1),
@@ -188,9 +305,25 @@ class AIOverlayRenderer:
                 continue
             kind = det.get("kind", "person")
             color = self.COLORS_BGR.get(kind, (129, 185, 16))
-            self._draw_corner_box(out, x1, y1, x2, y2, color, thickness=3 if kind == "fall" else 2)
+            self._draw_corner_box(out, x1, y1, x2, y2, color, thickness=4 if kind == "fall" else 3)
             if not skeleton and kind in ("person", "fall"):
                 self._draw_fallback_posture(out, x1, y1, x2, y2, kind, color)
+            # Vẽ phân vùng phụ chi tiết: Khuôn mặt (từ vai lên), Vùng đầu/đuôi xe, Vùng biển số xe
+            hb = det.get("head_box")
+            if hb:
+                hx, hy, hw, hh = hb
+                hx1, hy1 = max(0, hx), max(0, y_offset + hy)
+                hx2, hy2 = min(iw - 1, hx + hw), min(ih - 1, y_offset + hy + hh)
+                if hx2 > hx1 + 6 and hy2 > hy1 + 6:
+                    cv2.rectangle(out, (hx1, hy1), (hx2, hy2), (248, 189, 56), 2, cv2.LINE_AA)
+            pb = det.get("plate_box")
+            if pb:
+                px, py, pw, ph = pb
+                px1, py1 = max(0, px), max(0, y_offset + py)
+                px2, py2 = min(iw - 1, px + pw), min(ih - 1, y_offset + py + ph)
+                if px2 > px1 + 6 and py2 > py1 + 4:
+                    cv2.rectangle(out, (px1, py1), (px2, py2), (21, 204, 250), 2, cv2.LINE_AA)
+                    label_jobs.append((px1, py1, "Biển số", (21, 175, 235)))
             label_jobs.append((x1, y1, det.get("label", "Người di chuyển"), color))
 
         # 3. Vẽ nhãn chữ tiếng Việt có dấu (PIL) hoặc fallback ASCII (OpenCV)
@@ -830,6 +963,7 @@ class CameraAIProcessor:
         self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
         self.enhancer = FaceAndPlateEnhancer()
         self.learner = AdaptiveAILearner()
+        self.object_dnn = SmartObjectDNN()
         self.overlay_renderer = AIOverlayRenderer()
         self.overlay_cache = {}  # (cam_id, lens_idx) -> {"ts": float, "detections": list, "skeleton": list}
         self.ai_overlay_enabled = os.environ.get("CAMHUB_AI_OVERLAY", "1") != "0"
@@ -843,13 +977,29 @@ class CameraAIProcessor:
         threading.Thread(target=self._thermal_guard_loop, daemon=True).start()
         if HAS_MP_TASKS and not HAS_MP_LEGACY and not os.path.exists(POSE_TASK_PATH):
             threading.Thread(target=self._ensure_pose_task_model, daemon=True).start()
+        if os.environ.get("CAMHUB_ENABLE_YOLO_DL", "1") != "0" and not self.object_dnn.is_ready:
+            threading.Thread(target=self._ensure_yolo_model, daemon=True).start()
 
     def _resolve_engine_label(self) -> str:
+        dnn_tag = " + YOLOv5n" if getattr(self, "object_dnn", None) and self.object_dnn.is_ready else ""
         if HAS_MP_LEGACY:
-            return "MediaPipe Pose"
+            return f"MediaPipe Pose{dnn_tag}"
         if HAS_MP_TASKS and os.path.exists(POSE_TASK_PATH):
-            return "MediaPipe Pose Tasks"
-        return "OpenCV Person + Fall AI"
+            return f"MediaPipe Pose Tasks{dnn_tag}"
+        return f"OpenCV Person + Fall AI{dnn_tag}"
+
+    def _ensure_yolo_model(self):
+        try:
+            os.makedirs("models", exist_ok=True)
+            if not os.path.exists(YOLO_ONNX_PATH) or os.path.getsize(YOLO_ONNX_PATH) < 100000:
+                tmp_path = YOLO_ONNX_PATH + ".part"
+                urllib.request.urlretrieve(YOLO_ONNX_URL, tmp_path)
+                if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 100000:
+                    os.replace(tmp_path, YOLO_ONNX_PATH)
+            self.object_dnn._try_load()
+            self.active_engine_label = self._resolve_engine_label()
+        except Exception:
+            pass
 
     def _ensure_pose_task_model(self):
         try:
@@ -1392,10 +1542,134 @@ class CameraAIProcessor:
 
         return {"box": box, "kind": "person", "label": "Người di chuyển", "direction": ""}
 
+    @staticmethod
+    def _box_iou(a: tuple, b: tuple) -> float:
+        ax1, ay1, aw, ah = a
+        bx1, by1, bw, bh = b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax1 + aw, bx1 + bw), min(ay1 + ah, by1 + bh)
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        if inter <= 0:
+            return 0.0
+        union = (aw * ah) + (bw * bh) - inter
+        return inter / float(max(1, union))
+
+    def _enrich_sub_rois(self, img: np.ndarray, det: dict) -> dict:
+        """Gắn thêm khung phân vùng con: Khuôn mặt (từ vai lên), Đầu xe/Đuôi xe và Vùng biển số xe."""
+        bx, by, bw, bh = det["box"]
+        ih, iw = img.shape[:2]
+        kind = det.get("kind", "person")
+
+        # 1) Khung khuôn mặt từ vai lên cho Người di chuyển & Người đi xe
+        if kind in ("person", "rider"):
+            hx = max(0, bx + int(bw * 0.12))
+            hy = max(0, by - int(bh * 0.04))
+            hw = min(iw - hx, max(20, int(bw * 0.76)))
+            hh = min(ih - hy, max(24, int(bh * (0.42 if kind == "rider" else 0.36))))
+            det["head_box"] = (hx, hy, hw, hh)
+
+        # 2) Xác định Đầu xe / Đuôi xe và Vùng biển số xe cho phương tiện
+        if kind in ("rider", "vehicle"):
+            pad_x, pad_y = int(bw * 0.08), int(bh * 0.08)
+            vx1, vy1 = max(0, bx - pad_x), max(0, by - pad_y)
+            vx2, vy2 = min(iw, bx + bw + pad_x), min(ih, by + bh + pad_y)
+            veh_crop = img[vy1:vy2, vx1:vx2]
+            if veh_crop.size > 0:
+                pbox = self.enhancer._find_plate_in_vehicle(veh_crop)
+                if pbox is not None:
+                    px1, py1, px2, py2 = pbox
+                    det["plate_box"] = (vx1 + px1, vy1 + py1, max(12, px2 - px1), max(10, py2 - py1))
+                # Phân biệt Đầu xe (đèn pha sáng) vs Đuôi xe (đèn hậu đỏ / biển số phía sau)
+                rh = veh_crop.shape[0]
+                lower = veh_crop[int(rh * 0.42) : rh, :]
+                is_rear = (pbox is not None) or (lower.size > 0 and self.enhancer._is_red_object(lower))
+                is_front = False
+                if lower.size > 0 and not is_rear:
+                    gl = cv2.cvtColor(lower, cv2.COLOR_BGR2GRAY)
+                    br = cv2.countNonZero(cv2.inRange(gl, 220, 255)) / float(max(1, lower.shape[0] * lower.shape[1]))
+                    is_front = br >= 0.035
+                base_lbl = det.get("label", "Xe")
+                if base_lbl in ("Người đi xe", "Ô tô"):
+                    if is_rear:
+                        det["label"] = f"{base_lbl} (Đuôi xe)"
+                        det["direction"] = "sau"
+                    elif is_front:
+                        det["label"] = f"{base_lbl} (Đầu xe)"
+                        det["direction"] = "truoc"
+        return det
+
     def _classify_boxes_for_overlay(self, img: np.ndarray, boxes: list, is_horizontal: bool = False) -> list:
         if img is None or img.size == 0 or not boxes:
             return []
         ih, iw = img.shape[:2]
+
+        # Ưu tiên Deep Learning YOLOv5n ONNX nếu đã tải sẵn trên máy (chỉ giữ vật thể giao với vùng đang chuyển động)
+        if getattr(self, "object_dnn", None) and self.object_dnn.is_ready:
+            dnn_raw = self.object_dnn.detect(img, conf_thresh=0.32)
+            active_dnn = [
+                d for d in dnn_raw
+                if any(self._box_iou(d["box"], mb) >= 0.08 for mb in boxes)
+            ]
+            if active_dnn:
+                persons = [d for d in active_dnn if d["cls"] == "person"]
+                motos = [d for d in active_dnn if d["cls"] in ("motorcycle", "bicycle")]
+                cars = [d for d in active_dnn if d["cls"] == "car"]
+                trucks = [d for d in active_dnn if d["cls"] in ("truck", "bus")]
+
+                used_persons = set()
+                detections = []
+                for m in motos:
+                    mx, my, mw, mh = m["box"]
+                    best_p_idx = None
+                    best_ov = 0.0
+                    for pi, p in enumerate(persons):
+                        if pi in used_persons:
+                            continue
+                        ov = self._box_iou(m["box"], p["box"])
+                        if ov > best_ov:
+                            best_ov = ov
+                            best_p_idx = pi
+                    if best_p_idx is not None and best_ov >= 0.05:
+                        used_persons.add(best_p_idx)
+                        px, py, pw, ph = persons[best_p_idx]["box"]
+                        ux1, uy1 = min(mx, px), min(my, py)
+                        ux2, uy2 = max(mx + mw, px + pw), max(my + mh, py + ph)
+                        detections.append(self._enrich_sub_rois(img, {
+                            "box": (ux1, uy1, ux2 - ux1, uy2 - uy1),
+                            "kind": "rider",
+                            "label": "Người đi xe",
+                            "direction": "",
+                        }))
+                    else:
+                        detections.append(self._enrich_sub_rois(img, {
+                            "box": m["box"],
+                            "kind": "rider",
+                            "label": "Người đi xe",
+                            "direction": "",
+                        }))
+                for c in cars:
+                    detections.append(self._enrich_sub_rois(img, {
+                        "box": c["box"], "kind": "vehicle", "label": "Ô tô", "direction": "",
+                    }))
+                for t in trucks:
+                    detections.append(self._enrich_sub_rois(img, {
+                        "box": t["box"], "kind": "vehicle", "label": "Xe tải", "direction": "",
+                    }))
+                for pi, p in enumerate(persons):
+                    if pi in used_persons:
+                        continue
+                    px, py, pw, ph = p["box"]
+                    is_p_fall = is_horizontal and (pw / float(max(1, ph)) > 1.25)
+                    detections.append(self._enrich_sub_rois(img, {
+                        "box": p["box"],
+                        "kind": "fall" if is_p_fall else "person",
+                        "label": "Người té ngã" if is_p_fall else "Người di chuyển",
+                        "direction": "",
+                    }))
+                if detections:
+                    return detections[:5]
+
+        # Fallback: thuật toán phân loại hình thái + ánh sáng khi chưa có model YOLOv5n
         detections = []
         sorted_boxes = sorted(boxes, key=lambda b: b[2] * b[3], reverse=True)[:5]
         for idx_b, (bx, by, bw, bh) in enumerate(sorted_boxes):
@@ -1406,7 +1680,8 @@ class CameraAIProcessor:
             roi_chk = img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
             if self.enhancer._is_green_foliage(roi_chk):
                 continue
-            detections.append(self._classify_moving_object(img, (bx, by, bw, bh), is_fall=(is_horizontal and idx_b == 0)))
+            det = self._classify_moving_object(img, (bx, by, bw, bh), is_fall=(is_horizontal and idx_b == 0))
+            detections.append(self._enrich_sub_rois(img, det))
         return detections
 
     def _run_ai_on_lens(
