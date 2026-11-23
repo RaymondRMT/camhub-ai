@@ -541,6 +541,102 @@ app = FastAPI(title="CamHub AI Pro Server", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+
+HLS_VOD_DIR = Path("hls_vod_cache")
+HLS_VOD_DIR.mkdir(exist_ok=True)
+_HLS_VOD_LOCKS = {}
+_HLS_VOD_META_LOCK = threading.Lock()
+
+
+def _cleanup_hls_vod_cache(max_sessions: int = 6):
+    try:
+        dirs = [d for d in HLS_VOD_DIR.iterdir() if d.is_dir()]
+        if len(dirs) <= max_sessions:
+            return
+        dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        for old_dir in dirs[max_sessions:]:
+            shutil.rmtree(old_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _ensure_hls_vod_dir(rel_mp4_path: str) -> Path:
+    base_dir = Path("recordings").resolve()
+    target = (base_dir / rel_mp4_path).resolve()
+    if base_dir not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy tệp video")
+
+    st = target.stat()
+    # Nếu file vừa được ghi trong 20s gần đây (đang ghi trực tiếp), nhóm cache theo bước 15s để luôn tươi mới
+    is_active = (time.time() - st.st_mtime) < 20.0
+    ver_tag = f"{int(st.st_mtime // 15)}" if is_active else f"{st.st_size}_{int(st.st_mtime)}"
+    key = hashlib.md5(f"{rel_mp4_path}|{ver_tag}".encode("utf-8")).hexdigest()[:16]
+    out_dir = HLS_VOD_DIR / key
+    m3u8 = out_dir / "index.m3u8"
+    if m3u8.is_file() and m3u8.stat().st_size > 20:
+        try:
+            os.utime(out_dir, None)
+        except Exception:
+            pass
+        return out_dir
+
+    with _HLS_VOD_META_LOCK:
+        lock = _HLS_VOD_LOCKS.setdefault(key, threading.Lock())
+
+    with lock:
+        if m3u8.is_file() and m3u8.stat().st_size > 20:
+            return out_dir
+        if shutil.which("ffmpeg") is None:
+            raise HTTPException(status_code=503, detail="Thiếu FFmpeg để phát HLS VOD")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tmp_m3u8 = out_dir / "index.m3u8.tmp"
+        cmd = [
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-i", str(target),
+            "-c", "copy",
+            "-f", "hls",
+            "-hls_time", "6",
+            "-hls_playlist_type", "vod",
+            "-hls_list_size", "0",
+            "-hls_segment_filename", str(out_dir / "seg_%05d.ts"),
+            str(tmp_m3u8),
+        ]
+        try:
+            subprocess.check_call(cmd, timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if tmp_m3u8.is_file():
+                os.replace(tmp_m3u8, m3u8)
+        except Exception as e:
+            shutil.rmtree(out_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Không tạo được luồng phát theo đoạn: {e}")
+        _cleanup_hls_vod_cache(max_sessions=6)
+        return out_dir
+
+
+@app.get("/api/recordings/hls/{rel_path:path}/index.m3u8")
+def get_recording_hls_playlist(rel_path: str):
+    out_dir = _ensure_hls_vod_dir(rel_path)
+    m3u8 = out_dir / "index.m3u8"
+    return Response(
+        content=m3u8.read_bytes(),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/api/recordings/hls/{rel_path:path}/{segment_name}")
+def get_recording_hls_segment(rel_path: str, segment_name: str):
+    if not segment_name.endswith(".ts") or "/" in segment_name or "\\" in segment_name or ".." in segment_name:
+        raise HTTPException(status_code=400, detail="Tên đoạn video không hợp lệ")
+    out_dir = _ensure_hls_vod_dir(rel_path)
+    seg = (out_dir / segment_name).resolve()
+    if out_dir.resolve() not in seg.parents or not seg.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy đoạn video")
+    return Response(
+        content=seg.read_bytes(),
+        media_type="video/mp2t",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
 RECORDINGS_STREAM_CHUNK = 256 * 1024
 RECORDINGS_MAX_RANGE = 2 * 1024 * 1024
 
@@ -1703,6 +1799,7 @@ def list_recordings(user: dict = Depends(get_current_user)):
                     "category": category,
                     "label": label,
                     "url": "/" + full_path.replace("\\", "/"),
+                    "hls_url": "/api/recordings/hls/" + os.path.relpath(full_path, "recordings").replace("\\", "/") + "/index.m3u8",
                     "size_mb": size_mb,
                     "created_at": datetime.fromtimestamp(mtime, VN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 })
@@ -1854,7 +1951,7 @@ def apply_github_update(admin: dict = Depends(require_admin)):
             if r.status_code != 200:
                 raise HTTPException(status_code=502, detail=f"Không tải được gói cập nhật ({r.status_code})")
             skip_names = {"camhub.db", ".jwt_secret", "ai_learning.json", "mediamtx.yml"}
-            skip_dirs = {"recordings", "snapshots", "models", "bin", ".venv", "__pycache__", "hls_stream"}
+            skip_dirs = {"recordings", "snapshots", "models", "bin", ".venv", "__pycache__", "hls_stream", "hls_vod_cache"}
             with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
                 for member in zf.infolist():
                     if member.is_dir():
