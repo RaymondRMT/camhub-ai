@@ -1462,7 +1462,7 @@ def _read_cpu_ram_gpu() -> dict:
         except Exception:
             pass
 
-    gpu_name = "ARM SoC GPU"
+    gpu_name = "Windows PC" if os.name == "nt" else "ARM SoC GPU"
     gpu_pct = None
     # Đọc thông số GPU Adreno / Mali trên Android nếu kernel cho phép
     for path in (
@@ -1517,9 +1517,18 @@ def get_device_health(user: dict = Depends(get_current_user)):
             **sys_info,
         }
     except Exception:
+        bat_pct = 100
+        if os.name == "nt":
+            try:
+                import psutil
+                b = psutil.sensors_battery()
+                if b is not None and b.percent is not None:
+                    bat_pct = int(round(b.percent))
+            except Exception:
+                pass
         temp = ai_engine._read_device_temp() or 35.0
         return {
-            "battery_pct": 100,
+            "battery_pct": bat_pct,
             "temperature": round(temp, 1),
             "status": "OPTIMAL",
             "ai_engine": ai_engine.active_engine_label,
