@@ -592,8 +592,10 @@ def _ensure_hls_vod_dir(rel_mp4_path: str) -> Path:
         tmp_m3u8 = out_dir / "index.m3u8.tmp"
         cmd = [
             "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-fflags", "+genpts",
             "-i", str(target),
             "-c", "copy",
+            "-avoid_negative_ts", "make_zero",
             "-f", "hls",
             "-hls_time", "6",
             "-hls_playlist_type", "vod",
@@ -631,8 +633,10 @@ def get_recording_hls_segment(rel_path: str, segment_name: str):
     seg = (out_dir / segment_name).resolve()
     if out_dir.resolve() not in seg.parents or not seg.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy đoạn video")
+    seg_bytes = seg.read_bytes()
+    _track_tx(len(seg_bytes))
     return Response(
-        content=seg.read_bytes(),
+        content=seg_bytes,
         media_type="video/mp2t",
         headers={"Cache-Control": "public, max-age=3600"},
     )
@@ -1551,6 +1555,11 @@ async def push_two_way_audio(cam_id: str, audio: UploadFile = File(...), user: d
 # --- DEVICE HEALTH, STORAGE, RECORDINGS & ALERTS ---
 
 _NET_PREV = {"ts": 0.0, "rx": 0, "tx": 0}
+_APP_TX_BYTES = 0
+
+def _track_tx(n: int):
+    global _APP_TX_BYTES
+    _APP_TX_BYTES += max(0, int(n))
 _NET_LOCK = threading.Lock()
 
 
@@ -1578,6 +1587,11 @@ def _read_net_speed_and_ping() -> dict:
                         got_counters = True
         except Exception:
             pass
+
+    if not got_counters or (rx_bytes == 0 and tx_bytes == 0):
+        rx_bytes = int(getattr(ai_engine, "net_rx_bytes", 0))
+        tx_bytes = int(_APP_TX_BYTES)
+        got_counters = True
 
     down_kbps = 0.0
     up_kbps = 0.0
