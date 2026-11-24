@@ -2,26 +2,40 @@ $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $RootDir
 
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 $BinDir = Join-Path $RootDir "bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
 function Refresh-Path {
     $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
     $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path = "$BinDir;$machinePath;$userPath;C:\Program Files\Tesseract-OCR"
+    $pyLocal = Join-Path $env:LocalAppData "Programs\Python\Python312"
+    $pyLocalScripts = Join-Path $pyLocal "Scripts"
+    $env:Path = "$BinDir;$pyLocal;$pyLocalScripts;$machinePath;$userPath;C:\Program Files\Python312;C:\Program Files\Tesseract-OCR"
 }
 Refresh-Path
 
 Write-Host "[1/5] Kiem tra Python..." -ForegroundColor Cyan
 $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-if (-not $pyCmd) {
+if (-not $pyCmd -or ($pyCmd.Source -like "*WindowsApps\python.exe")) {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host "Dang cai Python 3.12 qua winget..."
         winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
         Refresh-Path
     } else {
-        throw "Chua co Python va khong tim thay winget. Vui long cai Python 3.10-3.12 tu python.org roi chay lai."
+        Write-Host "Khong co winget - Dang tai Python 3.12 truc tiep tu python.org..." -ForegroundColor Yellow
+        $PyInstaller = Join-Path $env:TEMP "python-3.12.7-amd64.exe"
+        Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" -OutFile $PyInstaller
+        Write-Host "Dang cai dat Python 3.12 (vui long cho 30-60 giay)..."
+        Start-Process -FilePath $PyInstaller -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait
+        Remove-Item $PyInstaller -Force -ErrorAction SilentlyContinue
+        Refresh-Path
     }
+}
+$pyCmd = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pyCmd -or ($pyCmd.Source -like "*WindowsApps\python.exe")) {
+    throw "Khong the tu dong cai Python 3.12. Vui long cai thu cong tu https://www.python.org/downloads/ (tich Add python.exe to PATH)."
 }
 
 Write-Host "[2/5] Kiem tra FFmpeg & Tesseract OCR..." -ForegroundColor Cyan
@@ -31,7 +45,21 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
         winget install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements
         Refresh-Path
     } else {
-        Write-Warning "Chua co FFmpeg. Vui long cai FFmpeg va them vao PATH."
+        Write-Host "Dang tai FFmpeg truc tiep vao thu muc bin..." -ForegroundColor Yellow
+        $FfZip = Join-Path $env:TEMP "ffmpeg-essentials.zip"
+        $FfTmp = Join-Path $env:TEMP "ffmpeg_extract"
+        try {
+            Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $FfZip
+            if (Test-Path $FfTmp) { Remove-Item $FfTmp -Recurse -Force }
+            Expand-Archive -Path $FfZip -DestinationPath $FfTmp -Force
+            Get-ChildItem -Path $FfTmp -Recurse -Include "ffmpeg.exe","ffprobe.exe" | ForEach-Object {
+                Copy-Item $_.FullName -Destination (Join-Path $BinDir $_.Name) -Force
+            }
+            Remove-Item $FfZip,$FfTmp -Recurse -Force -ErrorAction SilentlyContinue
+            Refresh-Path
+        } catch {
+            Write-Warning "Khong tai duoc FFmpeg tu dong. Vui long tai FFmpeg va chep ffmpeg.exe vao thu muc bin."
+        }
     }
 }
 if (-not (Get-Command tesseract -ErrorAction SilentlyContinue)) {
@@ -39,6 +67,8 @@ if (-not (Get-Command tesseract -ErrorAction SilentlyContinue)) {
         Write-Host "Dang cai Tesseract OCR (doc bien so) qua winget..."
         winget install -e --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements
         Refresh-Path
+    } else {
+        Write-Host "Bo qua Tesseract OCR (khong bat buoc; co the cai sau neu can doc chu bien so)." -ForegroundColor DarkGray
     }
 }
 
