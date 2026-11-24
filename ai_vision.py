@@ -952,7 +952,7 @@ class CameraAIProcessor:
         self.frames_lock = threading.Lock()
         self.cam_status = {}
         self.net_rx_bytes = 0
-        self.thermal_delay = 0.20  # Mặc định ~5 FPS tiết kiệm pin & giảm nhiệt
+        self.thermal_delay = 0.12  # Tự động tối ưu ~8-9 FPS khi 1 cam, giãn về ~4-5 FPS khi nhiều cam hoặc nóng >43°C
         os.makedirs("snapshots", exist_ok=True)
         os.makedirs("models", exist_ok=True)
 
@@ -1057,10 +1057,12 @@ class CameraAIProcessor:
         while True:
             temp = self._read_device_temp()
             if temp is not None:
+                cam_cnt = max(1, len(self.workers))
+                base_delay = 0.12 if cam_cnt == 1 else 0.22
                 if temp >= 43.0:
                     self.thermal_delay = 0.55
                 elif temp <= 38.5:
-                    self.thermal_delay = 0.20
+                    self.thermal_delay = base_delay
             time.sleep(20)
 
     def start_camera_monitor(self, cam_id: str, cam_name: str, rtsp_url: str):
@@ -1362,10 +1364,10 @@ class CameraAIProcessor:
             "-rtsp_transport", transport,
             "-timeout", "8000000",
             "-i", rtsp_url,
-            # Đầu ra 1: MJPEG cho xem trực tuyến & AI
+            # Đầu ra 1: MJPEG cho xem trực tuyến & AI (tự tăng ~8-9 FPS khi 1 cam, hạ ~4 FPS khi >=2 cam)
             "-map", "0:v:0",
             "-an",
-            "-vf", "select='not(mod(n,4))',scale='min(1920,iw)':-2,format=yuvj420p",
+            "-vf", f"select='not(mod(n,{2 if len(self.workers) <= 1 else 4}))',scale='min(1920,iw)':-2,format=yuvj420p",
             "-fps_mode", "drop",
             "-strict", "unofficial",
             "-f", "image2pipe",
@@ -1780,11 +1782,15 @@ class CameraAIProcessor:
                 bx, by, bw, bh = max(person_boxes, key=lambda b: b[2] * b[3])
                 roi = lens_img[max(0, by) : min(ih, by + bh), max(0, bx) : min(iw, bx + bw)]
                 sharp = float(cv2.Laplacian(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()) if roi.size > 0 else 0.0
-                # Ưu tiên khung hình đối tượng nằm gọn trong ảnh (không bị cắt nửa người/xe ở sát mép) + độ nét cao
-                margin_ok = 1.0 if (bx > 8 and by > 8 and (bx + bw) < (iw - 8) and (by + bh) < (ih - 8)) else 0.45
+                # Ưu tiên mạnh khung hình sắc nét (chống nhòe chuyển động) + đối tượng nằm gần tâm khung hình
+                margin_ok = 1.0 if (bx > 12 and by > 12 and (bx + bw) < (iw - 12) and (by + bh) < (ih - 12)) else 0.35
+                cx_norm = (bx + bw / 2.0) / float(max(1, iw))
+                cy_norm = (by + bh / 2.0) / float(max(1, ih))
+                center_bonus = 1.25 if (0.20 <= cx_norm <= 0.80 and 0.18 <= cy_norm <= 0.85) else 0.85
+                blur_factor = 0.35 if sharp < 35.0 else (1.0 + min(5.5, sharp / 85.0))
                 nb_best = (bx / float(max(1, iw)), by / float(max(1, ih)), bw / float(max(1, iw)), bh / float(max(1, ih)))
                 z_bonus = self.learner.zone_bonus(cam_id, lens_idx, nb_best)
-                score = (bw * bh) * margin_ok * z_bonus * (1.0 + min(3.0, sharp / 120.0))
+                score = math.sqrt(max(1.0, float(bw * bh))) * margin_ok * center_bonus * z_bonus * blur_factor
                 if st["burst_best"] is None or score > st["burst_best"]["score"]:
                     st["burst_best"] = {
                         "score": score,
@@ -1806,17 +1812,17 @@ class CameraAIProcessor:
 
                 ts_ms = int(now * 1000)
                 snap_file = f"snapshots/motion_{cam_id}_L{lens_idx}_{ts_ms}.jpg"
+                best_dets = self._classify_boxes_for_overlay(best["img"], best["boxes"], is_horizontal=False)
+                crop_boxes = [d["box"] for d in best_dets] if best_dets else best["boxes"]
                 details = self.enhancer.extract_detail_crops(
-                    best["img"], f"motion_{cam_id}_L{lens_idx}_{ts_ms}", best["boxes"], cam_id=cam_id, lens_idx=lens_idx, learner=self.learner
+                    best["img"], f"motion_{cam_id}_L{lens_idx}_{ts_ms}", crop_boxes, cam_id=cam_id, lens_idx=lens_idx, learner=self.learner
                 )
                 overview_jpg = best["jpg"]
-                if self.ai_overlay_enabled:
-                    best_dets = self._classify_boxes_for_overlay(best["img"], best["boxes"], is_horizontal=False)
-                    if best_dets:
-                        ann = self.overlay_renderer.render(best["img"], best_dets, None)
-                        ok_ov, buf_ov = cv2.imencode(".jpg", ann, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                        if ok_ov:
-                            overview_jpg = buf_ov.tobytes()
+                if self.ai_overlay_enabled and best_dets:
+                    ann = self.overlay_renderer.render(best["img"], best_dets, None)
+                    ok_ov, buf_ov = cv2.imencode(".jpg", ann, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                    if ok_ov:
+                        overview_jpg = buf_ov.tobytes()
                 with open(snap_file, "wb") as f:
                     f.write(overview_jpg)
                 self.on_alert({
